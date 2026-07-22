@@ -1,0 +1,22 @@
+[
+  {
+    "name": "示例书源（请替换为真实规则）",
+    "group": "demo",
+    "searchUrl": "https://example.com/search?q={{key}}&page={{page}}",
+    "bookUrl": "",
+    "tocUrl": "",
+    "contentUrl": "",
+    "enabled": false,
+    "comment": "占位示例，检测会失败。请导入你自己的 Legado/爱阅记 JSON。",
+    "rule": {
+      "bookList": "",
+      "name": "",
+      "author": "",
+      "bookUrl": "",
+      "chapterList": "",
+      "chapterName": "",
+      "chapterUrl": "",
+      "content": ""
+    }
+  }
+]

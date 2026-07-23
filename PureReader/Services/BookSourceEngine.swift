@@ -46,13 +46,15 @@ enum BookSourceEngine {
         let urlString = source.searchURL
             .replacingOccurrences(of: "{{key}}", with: urlEncode(keyword))
             .replacingOccurrences(of: "{{page}}", with: "\(page)")
-            .replacingOccurrences(of: "{{key}}", with: urlEncode(keyword))
         // Legado uses {{key}} or {key}
         let u2 = urlString
             .replacingOccurrences(of: "{key}", with: urlEncode(keyword))
             .replacingOccurrences(of: "{page}", with: "\(page)")
-        guard let url = URL(string: u2) else { return [] }
-        let body = try await fetchString(url: url)
+        guard let request = makeSearchRequest(raw: u2, baseURL: source.bookURL) else {
+            throw BookSourceError.unsupportedRequest
+        }
+        guard let url = request.url else { throw BookSourceError.invalidURL }
+        let body = try await fetchString(request: request)
         let rules = source.rules
         let blocks = RuleParser.getStrings(from: body, rule: rules.bookList, baseURL: url)
         if blocks.isEmpty {
@@ -236,10 +238,14 @@ enum BookSourceEngine {
     // MARK: - Network
 
     private static func fetchString(url: URL) async throws -> String {
+        try await fetchString(request: URLRequest(url: url))
+    }
+
+    private static func fetchString(request initialRequest: URLRequest) async throws -> String {
         var lastError: Error = BookSourceError.network
         for attempt in 0..<3 {
             do {
-                var request = URLRequest(url: url)
+                var request = initialRequest
                 request.timeoutInterval = 15
                 let (data, response) = try await session.data(for: request)
                 if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
@@ -261,6 +267,104 @@ enum BookSourceEngine {
         throw lastError
     }
 
+    private static func makeSearchRequest(raw: String, baseURL: String) -> URLRequest? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.lowercased().contains("@js:"),
+              !trimmed.lowercased().contains("<js>") else {
+            return nil
+        }
+
+        let descriptorStart = trimmed.range(of: ",{")
+        let path = descriptorStart.map { String(trimmed[..<$0.lowerBound]) } ?? trimmed
+        let descriptor = descriptorStart.map { String(trimmed[$0.lowerBound...].dropFirst()) } ?? ""
+        let url: URL?
+        if let absolute = URL(string: path), absolute.scheme != nil {
+            url = absolute
+        } else if let base = URL(string: baseURL) {
+            url = URL(string: path, relativeTo: base)?.absoluteURL
+        } else {
+            url = nil
+        }
+        guard let url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            return nil
+        }
+
+        var request = URLRequest(url: url)
+        let method = captureValue("method", in: descriptor)?.uppercased() ?? "GET"
+        guard method == "GET" || method == "POST" else { return nil }
+        request.httpMethod = method
+
+        if method == "POST" {
+            guard let body = captureValue("body", in: descriptor) else { return nil }
+            let charset = captureValue("charset", in: descriptor)?.lowercased() ?? "utf-8"
+            let encoding: String.Encoding = charset.contains("gb")
+                ? String.Encoding(
+                    rawValue: CFStringConvertEncodingToNSStringEncoding(
+                        CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+                    )
+                )
+                : .utf8
+            guard let bodyData = body.data(using: encoding) else { return nil }
+            request.httpBody = bodyData
+            request.setValue(
+                "application/x-www-form-urlencoded; charset=\(charset)",
+                forHTTPHeaderField: "Content-Type"
+            )
+        }
+        for (name, value) in captureHeaders(in: descriptor) {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        return request
+    }
+
+    private static func captureHeaders(in descriptor: String) -> [String: String] {
+        let allowed = Set(["user-agent", "referer", "accept", "accept-language", "origin"])
+        guard let outer = try? NSRegularExpression(
+            pattern: #"['\"]headers['\"]\s*:\s*\{([^}]*)\}"#,
+            options: [.caseInsensitive]
+        ),
+        let match = outer.firstMatch(
+            in: descriptor,
+            range: NSRange(descriptor.startIndex..., in: descriptor)
+        ),
+        match.range(at: 1).location != NSNotFound else {
+            return [:]
+        }
+
+        let body = (descriptor as NSString).substring(with: match.range(at: 1))
+        guard let pairExpression = try? NSRegularExpression(
+            pattern: #"['\"]([^'\"]+)['\"]\s*:\s*['\"]([^'\"]*)['\"]"#
+        ) else { return [:] }
+
+        var headers: [String: String] = [:]
+        for pair in pairExpression.matches(
+            in: body,
+            range: NSRange(body.startIndex..., in: body)
+        ) where pair.range(at: 1).location != NSNotFound
+            && pair.range(at: 2).location != NSNotFound {
+            let name = (body as NSString).substring(with: pair.range(at: 1))
+            guard allowed.contains(name.lowercased()) else { continue }
+            headers[name] = (body as NSString).substring(with: pair.range(at: 2))
+        }
+        return headers
+    }
+
+    private static func captureValue(_ key: String, in descriptor: String) -> String? {
+        guard !descriptor.isEmpty,
+              let expression = try? NSRegularExpression(
+                pattern: "['\"]\(NSRegularExpression.escapedPattern(for: key))['\"]\\s*:\\s*['\"]([^'\"]*)['\"]",
+                options: [.caseInsensitive]
+              ),
+              let match = expression.firstMatch(
+                in: descriptor,
+                range: NSRange(descriptor.startIndex..., in: descriptor)
+              ),
+              match.range(at: 1).location != NSNotFound else {
+            return nil
+        }
+        return (descriptor as NSString).substring(with: match.range(at: 1))
+    }
+
     private static func urlEncode(_ s: String) -> String {
         s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
     }
@@ -271,6 +375,7 @@ enum BookSourceError: LocalizedError {
     case network
     case httpStatus(Int)
     case empty
+    case unsupportedRequest
 
     var errorDescription: String? {
         switch self {
@@ -278,6 +383,7 @@ enum BookSourceError: LocalizedError {
         case .network: return String(localized: "网络请求失败")
         case .httpStatus(let c): return String(localized: "HTTP \(c)")
         case .empty: return String(localized: "无结果")
+        case .unsupportedRequest: return String(localized: "该书源的请求格式暂不支持")
         }
     }
 }

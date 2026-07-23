@@ -74,6 +74,7 @@ struct BookshelfView: View {
             }
             .sheet(item: $viewModel.importReport, onDismiss: {
                 expandedImportReport = false
+                viewModel.dismissImportReport()
             }) { report in
                 ImportResultSheet(
                     report: report,
@@ -111,8 +112,10 @@ struct BookshelfView: View {
                 String(localized: "导入结果"),
                 isPresented: Binding(
                     get: {
-                        viewModel.importErrorMessage != nil
-                            || viewModel.importSuccessMessage != nil
+                        viewModel.importReport == nil
+                            && !viewModel.showURLImporter
+                            && (viewModel.importErrorMessage != nil
+                                || viewModel.importSuccessMessage != nil)
                     },
                     set: { if !$0 {
                         viewModel.importErrorMessage = nil

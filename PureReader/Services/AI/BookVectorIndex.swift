@@ -216,8 +216,8 @@ enum IndexingMode: Sendable {
 
     static func determine(wordCount: Int) -> IndexingMode {
         switch wordCount {
-        case ..<25_000: return .skip
-        case 25_000..<500_000: return .fullAsync
+        case Int.min...0: return .skip
+        case 1..<500_000: return .fullAsync
         default: return .slimAsync
         }
     }

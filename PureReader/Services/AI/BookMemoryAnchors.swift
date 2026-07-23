@@ -3,6 +3,7 @@ import Foundation
 // MARK: - Anchor models
 
 struct BookMemoryAnchors: Codable, Sendable {
+    var schemaVersion: Int
     var bookID: String
     var generatedAt: Date
     var totalChapters: Int
@@ -14,6 +15,7 @@ struct BookMemoryAnchors: Codable, Sendable {
     var narrativeMilestones: [MilestoneAnchor]
 
     static let empty = BookMemoryAnchors(
+        schemaVersion: 2,
         bookID: "",
         generatedAt: .distantPast,
         totalChapters: 0,
@@ -119,6 +121,9 @@ struct MilestoneAnchor: Codable, Sendable {
 // MARK: - Store
 
 enum BookMemoryAnchorStore {
+    static let anchorSchemaVersion = 2
+    private static let batchSchemaVersion = 2
+
     static func directory(for bookID: UUID) -> URL {
         let root = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
@@ -138,8 +143,12 @@ enum BookMemoryAnchorStore {
 
     static func loadAnchors(bookID: UUID) -> BookMemoryAnchors? {
         let url = anchorsURL(for: bookID)
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return try? JSONDecoder().decode(BookMemoryAnchors.self, from: data)
+        guard let data = try? Data(contentsOf: url),
+              let anchors = try? JSONDecoder().decode(BookMemoryAnchors.self, from: data),
+              anchors.schemaVersion == anchorSchemaVersion else {
+            return nil
+        }
+        return anchors
     }
 
     static func saveAnchors(_ anchors: BookMemoryAnchors, bookID: UUID) throws {
@@ -149,10 +158,15 @@ enum BookMemoryAnchorStore {
         try data.write(to: anchorsURL(for: bookID), options: .atomic)
     }
 
+    static func invalidateAnchors(bookID: UUID) {
+        try? FileManager.default.removeItem(at: anchorsURL(for: bookID))
+    }
+
     static func loadBatch(bookID: UUID, batchIdx: Int) -> String? {
         let url = batchURL(for: bookID, batchIdx: batchIdx)
         guard let data = try? Data(contentsOf: url),
               let obj = try? JSONDecoder().decode(BatchCache.self, from: data),
+              obj.schemaVersion == batchSchemaVersion,
               !obj.dirty
         else { return nil }
         return obj.summary
@@ -161,7 +175,13 @@ enum BookMemoryAnchorStore {
     static func saveBatch(bookID: UUID, batchIdx: Int, summary: String, dirty: Bool = false) throws {
         let dir = directory(for: bookID)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let cache = BatchCache(batchIdx: batchIdx, summary: summary, dirty: dirty, updatedAt: Date())
+        let cache = BatchCache(
+            schemaVersion: batchSchemaVersion,
+            batchIdx: batchIdx,
+            summary: summary,
+            dirty: dirty,
+            updatedAt: Date()
+        )
         let data = try JSONEncoder().encode(cache)
         try data.write(to: batchURL(for: bookID, batchIdx: batchIdx), options: .atomic)
     }
@@ -180,6 +200,7 @@ enum BookMemoryAnchorStore {
 }
 
 struct BatchCache: Codable, Sendable {
+    var schemaVersion: Int
     var batchIdx: Int
     var summary: String
     var dirty: Bool

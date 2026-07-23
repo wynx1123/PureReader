@@ -21,7 +21,10 @@ struct AddBookSheet: View {
                     }
 
                     Button {
-                        viewModel.showURLImporter = true
+                        dismiss()
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            viewModel.showURLImporter = true
+                        }
                     } label: {
                         Label(String(localized: "从 HTTPS 链接导入"), systemImage: "link")
                             .frame(minHeight: PRTheme.touch)
@@ -63,9 +66,6 @@ struct AddBookSheet: View {
                         .frame(minWidth: PRTheme.touch, minHeight: PRTheme.touch)
                 }
             }
-            .sheet(isPresented: $viewModel.showURLImporter) {
-                URLImportSheet(viewModel: viewModel)
-            }
         }
         .presentationDetents([.medium, .large])
     }
@@ -105,7 +105,10 @@ struct URLImportSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(String(localized: "取消")) { dismiss() }
+                    Button(String(localized: "取消")) {
+                        viewModel.importErrorMessage = nil
+                        dismiss()
+                    }
                         .frame(minWidth: PRTheme.touch, minHeight: PRTheme.touch)
                 }
                 ToolbarItem(placement: .confirmationAction) {
@@ -126,5 +129,13 @@ struct URLImportSheet: View {
             }
         }
         .presentationDetents([.medium])
+        .onAppear {
+            viewModel.importErrorMessage = nil
+        }
+        .onDisappear {
+            if viewModel.importSuccessMessage == nil {
+                viewModel.importErrorMessage = nil
+            }
+        }
     }
 }

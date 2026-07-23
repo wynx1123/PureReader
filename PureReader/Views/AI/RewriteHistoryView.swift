@@ -101,6 +101,13 @@ struct RewriteHistoryView: View {
                     .foregroundStyle(.tint)
             }
 
+            if !record.userRequest.isEmpty {
+                Text(String(localized: "要求：\(record.userRequest)"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+
             Text(String(localized: "原文"))
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.secondary)

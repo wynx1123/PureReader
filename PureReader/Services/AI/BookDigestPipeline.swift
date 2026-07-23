@@ -79,18 +79,31 @@ actor BookDigestPipeline {
     private func buildBatchText(_ batch: [ChapterSnapshot], batchIdx: Int) -> String {
         var text = "批次 \(batchIdx + 1)\n"
         for chapter in batch {
-            let head = String(chapter.content.prefix(200))
-            let tail = String(chapter.content.suffix(200))
+            let head = String(chapter.content.prefix(180))
+            let middle = middleExcerpt(chapter.content, length: 180)
+            let tail = String(chapter.content.suffix(180))
             let names = ContextAssembler.extractCharacterNames(from: chapter.content).prefix(8)
             text += """
             --- 第 \(chapter.index + 1) 章：\(chapter.title) ---
             开头：\(head)
+            中段：\(middle)
             结尾：\(tail)
             出现人物：\(names.joined(separator: "、"))
 
             """
         }
         return text
+    }
+
+    private func middleExcerpt(_ text: String, length: Int) -> String {
+        guard text.count > length else { return text }
+        let half = max(1, length / 2)
+        let midpoint = text.index(text.startIndex, offsetBy: text.count / 2)
+        let before = text.distance(from: text.startIndex, to: midpoint)
+        let after = text.distance(from: midpoint, to: text.endIndex)
+        let start = text.index(midpoint, offsetBy: -min(half, before))
+        let end = text.index(midpoint, offsetBy: min(length - half, after))
+        return String(text[start..<end])
     }
 
     private func summarizeBatch(
@@ -100,8 +113,8 @@ actor BookDigestPipeline {
         bookTitle: String
     ) async throws -> String {
         let system = """
-        你是小说摘要助手。用简洁中文总结本批章节的关键情节、人物变化、新设定，不超过 600 字。
-        不要写客套话。
+        你是小说结构摘要助手。按时间顺序总结本批章节的关键事件、人物立场变化、新设定、
+        已埋下但尚未解决的线索，以及批次结尾的故事状态。控制在 900 字以内，不要写客套话。
         """
         let user = """
         书名：《\(bookTitle)》
@@ -168,6 +181,7 @@ actor BookDigestPipeline {
               let p = try? JSONDecoder().decode(Payload.self, from: data)
         else {
             return BookMemoryAnchors(
+                schemaVersion: BookMemoryAnchorStore.anchorSchemaVersion,
                 bookID: bookID.uuidString,
                 generatedAt: Date(),
                 totalChapters: totalChapters,
@@ -181,6 +195,7 @@ actor BookDigestPipeline {
         }
 
         return BookMemoryAnchors(
+            schemaVersion: BookMemoryAnchorStore.anchorSchemaVersion,
             bookID: bookID.uuidString,
             generatedAt: Date(),
             totalChapters: totalChapters,

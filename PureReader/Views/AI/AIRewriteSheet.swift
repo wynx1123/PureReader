@@ -3,14 +3,16 @@ import SwiftData
 
 // MARK: - Selection + loading + result host
 
+@MainActor
 struct AIRewriteSheet: View {
     let pageText: String
+    let pageUTF16Offset: Int
     let chapterContent: String
     let chapterTitle: String
     let chapterIndex: Int
     let chapterID: UUID
     let book: Book
-    let onConfirm: (String, String) async throws -> Void
+    let onConfirm: (RewriteApplication) async throws -> Void
 
     @Environment(\.dismiss) private var dismiss
 
@@ -24,7 +26,9 @@ struct AIRewriteSheet: View {
     @State private var refineNote: String = ""
     @State private var showRefine = false
     @State private var style: RewriteStylePreset = AIConfig.stylePreset
-    @State private var editablePage: String = ""
+    @State private var rewritePlan: RewritePlan?
+    @State private var progressStage: RewriteProgressStage = .planning
+    @State private var resolvedTargetOffset: Int?
 
     var body: some View {
         NavigationStack {
@@ -54,7 +58,6 @@ struct AIRewriteSheet: View {
                 Text(errorMessage ?? "")
             }
             .onAppear {
-                editablePage = pageText
                 if selectedText.isEmpty {
                     selectedText = pageText
                 }
@@ -80,7 +83,7 @@ struct AIRewriteSheet: View {
             }
 
             Section {
-                Text(String(localized: "📋 选择或编辑要改写的段落"))
+                Text(String(localized: "📋 选择要改写的原文范围"))
                     .font(.headline)
                 TextEditor(text: $selectedText)
                     .font(.body)
@@ -90,6 +93,9 @@ struct AIRewriteSheet: View {
                     selectedText = pageText
                 }
                 .font(.caption)
+                Text(String(localized: "可删除前后文字来缩小范围；请保留原文字词，以便准确替换。"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section(String(localized: "改写风格")) {
@@ -157,9 +163,10 @@ struct AIRewriteSheet: View {
         VStack(spacing: 20) {
             ProgressView()
                 .controlSize(.large)
-            Text(String(localized: "✨ AI 正在构思…"))
+            Text(progressStage.title)
+                .font(.headline)
                 .foregroundStyle(.secondary)
-            Text(String(localized: "会注入位置上下文与语义检索结果"))
+            Text(String(localized: "情节规划 → 正文生成 → 一致性检查"))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }
@@ -179,6 +186,10 @@ struct AIRewriteSheet: View {
                     }
                     .padding(12)
                     .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                }
+
+                if let rewritePlan {
+                    planBlock(rewritePlan)
                 }
 
                 Text(String(localized: "左右对比"))
@@ -216,7 +227,10 @@ struct AIRewriteSheet: View {
                         Task { await confirmReplace() }
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(isWorking)
+                    .disabled(
+                        isWorking
+                            || rewrittenText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
                 }
                 .padding(.top, 8)
             }
@@ -247,30 +261,61 @@ struct AIRewriteSheet: View {
         }
     }
 
+    private func planBlock(_ plan: RewritePlan) -> some View {
+        let preserveSummary = plan.mustPreserve.prefix(3).joined(separator: "；")
+        return VStack(alignment: .leading, spacing: 10) {
+            Label(String(localized: "情节结构方案"), systemImage: "point.3.connected.trianglepath.dotted")
+                .font(.subheadline.weight(.semibold))
+            Text(plan.intentSummary)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            ForEach(Array(plan.storyBeats.prefix(5).enumerated()), id: \.offset) { index, beat in
+                HStack(alignment: .top, spacing: 8) {
+                    Text("\(index + 1)")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.tint)
+                        .frame(width: 18, height: 18)
+                        .background(Color.accentColor.opacity(0.12), in: Circle())
+                    Text(beat)
+                        .font(.caption)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            if !plan.mustPreserve.isEmpty {
+                Text(String(localized: "保留：\(preserveSummary)"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+    }
+
     // MARK: - Actions
 
     private func runRewrite(retry: Bool = false) async {
         isWorking = true
         phase = .loading
+        progressStage = .planning
         errorMessage = nil
         defer { isWorking = false }
 
         do {
-            let context = await buildContext()
+            let context = await buildContext(query: userRequest)
+            resolvedTargetOffset = context.targetUTF16Offset ?? pageUTF16Offset
             let temp = retry ? min(1.0, AIConfig.temperature + 0.1) : AIConfig.temperature
-            let raw = try await AIRewriteEngine.rewrite(
+            let outcome = try await AIRewriteEngine.rewriteStructured(
                 context: context,
                 userRequest: userRequest,
                 style: style,
-                temperature: temp
+                temperature: temp,
+                progress: { stage in
+                    progressStage = stage
+                }
             )
-            let validation = RewriteValidator.validate(
-                original: selectedText,
-                rewritten: raw,
-                context: context
-            )
-            rewrittenText = validation.cleanedText
-            warnings = validation.warnings
+            rewrittenText = outcome.text
+            rewritePlan = outcome.plan
+            warnings = outcome.validation.warnings
             phase = .result
         } catch {
             errorMessage = error.localizedDescription
@@ -282,23 +327,28 @@ struct AIRewriteSheet: View {
         guard !refineNote.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         isWorking = true
         phase = .loading
+        progressStage = .planning
         defer { isWorking = false }
         do {
-            let context = await buildContext()
-            let raw = try await AIRewriteEngine.refine(
+            let combinedQuery = [userRequest, refineNote]
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .joined(separator: "\n")
+            let context = await buildContext(query: combinedQuery)
+            resolvedTargetOffset = context.targetUTF16Offset ?? pageUTF16Offset
+            let outcome = try await AIRewriteEngine.refineStructured(
                 context: context,
                 originalRequest: userRequest,
                 refineNote: refineNote,
                 previousRewrite: rewrittenText,
-                style: style
+                style: style,
+                progress: { stage in
+                    progressStage = stage
+                }
             )
-            let validation = RewriteValidator.validate(
-                original: selectedText,
-                rewritten: raw,
-                context: context
-            )
-            rewrittenText = validation.cleanedText
-            warnings = validation.warnings
+            rewrittenText = outcome.text
+            rewritePlan = outcome.plan
+            warnings = outcome.validation.warnings
+            userRequest = combinedQuery
             phase = .result
             refineNote = ""
         } catch {
@@ -311,14 +361,22 @@ struct AIRewriteSheet: View {
         isWorking = true
         defer { isWorking = false }
         do {
-            try await onConfirm(selectedText, rewrittenText)
+            try await onConfirm(
+                RewriteApplication(
+                    originalText: selectedText,
+                    rewrittenText: rewrittenText,
+                    userRequest: userRequest,
+                    style: style,
+                    expectedUTF16Offset: resolvedTargetOffset ?? pageUTF16Offset
+                )
+            )
             dismiss()
         } catch {
             errorMessage = error.localizedDescription
         }
     }
 
-    private func buildContext() async -> RewriteContext {
+    private func buildContext(query: String) async -> RewriteContext {
         let bookID = book.id
         let index = BookUnderstandingCoordinator.shared.vectorIndex(for: bookID)
         let anchors = BookUnderstandingCoordinator.shared.memoryAnchors(for: bookID)
@@ -330,8 +388,10 @@ struct AIRewriteSheet: View {
             chapterTitle: chapterTitle,
             chapterIndex: chapterIndex,
             originalText: selectedText,
+            userRequest: query,
             bookTitle: book.title,
             author: book.author,
+            expectedUTF16Offset: pageUTF16Offset,
             vectorIndex: index,
             memoryAnchorText: anchorText
         )

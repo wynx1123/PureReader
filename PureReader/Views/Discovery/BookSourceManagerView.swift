@@ -70,6 +70,11 @@ struct BookSourceManagerView: View {
                         }
                     }
                 }
+                Section {
+                    Text(String(localized: "重复导入同一合集会更新现有书源并重新评估兼容性，不会重复创建。含任意 JavaScript/WebView 的搜索规则会自动停用。"))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
             }
             .navigationTitle(String(localized: "书源管理"))
             .navigationBarTitleDisplayMode(.inline)

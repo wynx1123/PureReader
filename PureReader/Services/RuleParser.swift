@@ -56,15 +56,21 @@ enum RuleParser {
     // MARK: - Evaluate
 
     private static func evaluateSingle(content: String, rule: String, baseURL: URL?) -> String? {
-        if rule.hasPrefix("$.") || rule.hasPrefix("$[") {
-            return jsonString(content: content, path: rule)
+        let (extractionRule, replacement) = splitExtractionAndReplacement(rule)
+        let value: String?
+        if extractionRule.hasPrefix("$.") || extractionRule.hasPrefix("$[") {
+            value = jsonString(content: content, path: extractionRule)
+        } else if extractionRule.hasPrefix("##") {
+            value = regexFirst(content: content, rule: extractionRule)
+        } else {
+            value = cssFirst(
+                content: content,
+                rule: normalizeLegadoRule(extractionRule),
+                baseURL: baseURL
+            )
         }
-        if rule.hasPrefix("##") {
-            // ##regex## 取 group 1
-            return regexFirst(content: content, rule: rule)
-        }
-        // CSS-like
-        return cssFirst(content: content, rule: rule, baseURL: baseURL)
+        guard let value else { return nil }
+        return replacement.map { applyInlineReplacement(value, expression: $0) } ?? value
     }
 
     private static func evaluateList(content: String, rule: String, baseURL: URL?) -> [String] {
@@ -73,7 +79,52 @@ enum RuleParser {
         }
         // 列表规则：先取列表节点，再在每块内取属性
         // 格式：`div.book` 或 `div.book@html` 作为块，由调用方再解析字段
-        return cssBlocks(content: content, rule: rule)
+        let (extractionRule, _) = splitExtractionAndReplacement(rule)
+        return cssBlocks(content: content, rule: normalizeLegadoRule(extractionRule))
+    }
+
+    private static func normalizeLegadoRule(_ rule: String) -> String {
+        let components = rule.components(separatedBy: "@")
+        guard let rawSelector = components.first else { return rule }
+        let rawAttribute = components.count > 1 ? components.last : nil
+        let selectorParts = rawSelector.split(separator: ".").map(String.init)
+        var selector = rawSelector
+        if selectorParts.count >= 2 {
+            switch selectorParts[0].lowercased() {
+            case "class": selector = "." + selectorParts[1]
+            case "id": selector = "#" + selectorParts[1]
+            case "tag": selector = selectorParts[1]
+            default:
+                if Int(selectorParts.last ?? "") != nil {
+                    selector = selectorParts.dropLast().joined(separator: ".")
+                }
+            }
+        }
+        guard let attribute = rawAttribute,
+              ["text", "textnodes", "html", "href", "src", "onclick"]
+                .contains(attribute.lowercased()) else {
+            return selector
+        }
+        return selector + "@" + attribute
+    }
+
+    private static func splitExtractionAndReplacement(_ rule: String) -> (String, String?) {
+        guard let range = rule.range(of: "##"), range.lowerBound != rule.startIndex else {
+            return (rule, nil)
+        }
+        return (String(rule[..<range.lowerBound]), String(rule[range.upperBound...]))
+    }
+
+    private static func applyInlineReplacement(_ value: String, expression: String) -> String {
+        let pair = expression.components(separatedBy: "##")
+        let pattern = pair.first ?? expression
+        let replacement = pair.count > 1 ? pair[1] : ""
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return value }
+        return regex.stringByReplacingMatches(
+            in: value,
+            range: NSRange(value.startIndex..., in: value),
+            withTemplate: replacement
+        )
     }
 
     // MARK: - JSON

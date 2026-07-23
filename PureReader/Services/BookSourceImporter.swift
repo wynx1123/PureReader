@@ -207,9 +207,13 @@ enum BookSourceImporter {
             return String(localized: "搜索请求格式暂不支持")
         }
 
-        let ruleObjects = ["ruleSearch", "ruleBookInfo", "ruleToc", "ruleContent"]
-            .compactMap { object[$0] as? [String: Any] }
-        let ruleValues = ruleObjects.flatMap { $0.values.compactMap { $0 as? String } }
+        guard let searchRules = object["ruleSearch"] as? [String: Any],
+              string(searchRules, "bookList") != nil,
+              string(searchRules, "name") != nil,
+              string(searchRules, "bookUrl") != nil else {
+            return String(localized: "缺少搜索列表、书名或详情地址规则")
+        }
+        let ruleValues = searchRules.values.compactMap { $0 as? String }
         if ruleValues.contains(where: {
             $0.contains("@js:") || $0.contains("<js>")
                 || $0.contains("@put:") || $0.contains("@get:")
@@ -220,13 +224,22 @@ enum BookSourceImporter {
             let lowerRule = rule.lowercased()
             return lowerRule.hasPrefix("//")
                 || lowerRule.contains("@xpath:")
-                || lowerRule.range(
-                    of: #"(^|[.@])(class|tag|id)\."#,
-                    options: .regularExpression
-                ) != nil
-                || lowerRule.contains("##")
         }) {
-            return String(localized: "解析规则使用了尚未支持的 Legado DSL/XPath")
+            return String(localized: "搜索规则使用了 XPath")
+        }
+        return nil
+    }
+
+    private static func readingCompatibilityIssue(_ object: [String: Any]) -> String? {
+        let ruleObjects = ["ruleBookInfo", "ruleToc", "ruleContent"]
+            .compactMap { object[$0] as? [String: Any] }
+        let values = ruleObjects.flatMap { $0.values.compactMap { $0 as? String } }
+        if values.contains(where: {
+            let lower = $0.lowercased()
+            return lower.contains("@js:") || lower.contains("<js>")
+                || lower.contains("webview") || lower.contains("@put:") || lower.contains("@get:")
+        }) {
+            return String(localized: "目录或正文依赖脚本/WebView")
         }
         return nil
     }
@@ -253,6 +266,11 @@ enum BookSourceImporter {
 
     private static func appendCompatibilityNote(_ comment: String, issue: String) -> String {
         let note = String(localized: "PureReader 暂不兼容：\(issue)。该书源已自动停用。")
+        return comment.isEmpty ? note : comment + "\n\n" + note
+    }
+
+    private static func appendPartialCompatibilityNote(_ comment: String, issue: String) -> String {
+        let note = String(localized: "PureReader 部分兼容：\(issue)。可显示搜索结果，但加入书架可能失败。")
         return comment.isEmpty ? note : comment + "\n\n" + note
     }
 
@@ -349,6 +367,7 @@ enum BookSourceImporter {
         guard !search.isEmpty, !baseURL.isEmpty else { throw ImportError.invalidFormat }
         let comment = string(obj, "bookSourceComment") ?? string(obj, "comment") ?? ""
         let compatibility = compatibilityIssue(searchURL: search, object: obj)
+        let readingIssue = readingCompatibilityIssue(obj)
         let enabled = (bool(obj, "enabled") ?? true) && compatibility == nil
         let weight = int(obj, "customOrder") ?? int(obj, "weight") ?? 0
 
@@ -389,7 +408,9 @@ enum BookSourceImporter {
             rules: rules,
             enabled: enabled,
             format: .legado,
-            comment: compatibility.map { appendCompatibilityNote(comment, issue: $0) } ?? comment,
+            comment: compatibility.map { appendCompatibilityNote(comment, issue: $0) }
+                ?? readingIssue.map { appendPartialCompatibilityNote(comment, issue: $0) }
+                ?? comment,
             weight: weight
         )
         source.isValid = compatibility == nil

@@ -28,7 +28,12 @@ final class DiscoveryViewModel {
         sourceCache = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
         let enabled = sources.filter(\.enabled)
         guard !enabled.isEmpty else {
-            errorMessage = String(localized: "请先在书源管理中启用至少一个书源")
+            let incompatible = sources.filter { !$0.isValid }.count
+            if !sources.isEmpty, incompatible == sources.count {
+                errorMessage = String(localized: "已安装 \(sources.count) 个书源，但都因脚本或规则兼容性被停用。请在书源管理中重新导入以重新评估，或导入无 JavaScript 的书源。")
+            } else {
+                errorMessage = String(localized: "已安装 \(sources.count) 个书源，但没有启用的书源。请前往书源管理启用。")
+            }
             return
         }
         isSearching = true

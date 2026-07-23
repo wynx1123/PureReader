@@ -105,8 +105,8 @@ final class BookshelfViewModel {
     // MARK: - Local file import
 
     /// 从 fileImporter completion 同步调用。
-    /// 关键点：必须在 completion 尚未返回时就取得 Security Scope；否则“文件”App
-    /// 提供的 URL 可能在异步 Task 开始前失效，表现为选文件后没有结果。
+    /// 在回调当下取得 Security Scope，但将 iCloud 下载/复制放到后台；scope 会一直
+    /// 保持到对应文件完成暂存，避免主线程卡住或异步开始前权限失效。
     func beginLocalImport(_ urls: [URL], context: ModelContext) {
         guard !urls.isEmpty else {
             showImportReport(
@@ -126,52 +126,19 @@ final class BookshelfViewModel {
         importProgressText = String(localized: "正在准备文件")
         importProgressDetail = urls.map(\.lastPathComponent).joined(separator: "、")
 
-        // P0: fileImporter completion 返回后，安全作用域可能立即失效。
-        // 所以此处同步复制到 Caches，异步阶段只读取 App 自己的副本。
-        var staged: [(filename: String, url: URL)] = []
-        var stagingFailures: [String] = []
-        for sourceURL in urls {
-            let name = sourceURL.lastPathComponent.isEmpty
-                ? String(localized: "未命名文件")
-                : sourceURL.lastPathComponent
-            let accessed = sourceURL.startAccessingSecurityScopedResource()
-            defer {
-                if accessed { sourceURL.stopAccessingSecurityScopedResource() }
-            }
-            // 返回 false 不等于一定无法读：有些来自“文件”的 URL 不需要额外 scope。
-            // 统一尝试暂存；失败时才向用户给出可复制的诊断信息。
-            do {
-                let stagedURL = try BookImportService.stageSecurityScopedFile(sourceURL)
-                staged.append((name, stagedURL))
-            } catch {
-                stagingFailures.append("\(name)：\(diagnosticMessage(for: error))")
-            }
-        }
-
-        guard !staged.isEmpty else {
-            isImporting = false
-            importProgressText = nil
-            importProgressDetail = nil
-            importErrorMessage = stagingFailures.joined(separator: "\n")
-            showImportReport(
-                title: String(localized: "无法读取所选文件"),
-                message: String(localized: "文件未能从“文件”App 复制到纯享阅读。"),
-                details: stagingFailures,
-                isSuccess: false
-            )
-            return
+        // fileImporter 回调中立即取得权限，实际文件下载与复制在后台进行。
+        let scopedURLs = urls.map { url in
+            (url: url, accessed: url.startAccessingSecurityScopedResource())
         }
 
         Task { [weak self] in
             guard let self else {
-                for item in staged { try? FileManager.default.removeItem(at: item.url) }
+                for item in scopedURLs where item.accessed {
+                    item.url.stopAccessingSecurityScopedResource()
+                }
                 return
             }
-            await self.performStagedImport(
-                staged,
-                stagingFailures: stagingFailures,
-                context: context
-            )
+            await self.performScopedImport(scopedURLs, context: context)
         }
     }
 
@@ -188,19 +155,30 @@ final class BookshelfViewModel {
     }
 
     private func performLocalImport(_ urls: [URL], context: ModelContext) async {
+        let scopedURLs = urls.map { url in
+            (url: url, accessed: url.startAccessingSecurityScopedResource())
+        }
+        await performScopedImport(scopedURLs, context: context)
+    }
+
+    private func performScopedImport(
+        _ scopedURLs: [(url: URL, accessed: Bool)],
+        context: ModelContext
+    ) async {
         var staged: [(filename: String, url: URL)] = []
         var failures: [String] = []
-        for sourceURL in urls {
+        for scoped in scopedURLs {
+            let sourceURL = scoped.url
             let filename = sourceURL.lastPathComponent
-            let accessed = sourceURL.startAccessingSecurityScopedResource()
-            defer {
-                if accessed { sourceURL.stopAccessingSecurityScopedResource() }
-            }
             do {
-                let stagedURL = try BookImportService.stageSecurityScopedFile(sourceURL)
+                importProgressDetail = filename
+                let stagedURL = try await BookImportService.stageSecurityScopedFileAsync(sourceURL)
                 staged.append((filename, stagedURL))
             } catch {
                 failures.append("\(filename)：\(diagnosticMessage(for: error))")
+            }
+            if scoped.accessed {
+                sourceURL.stopAccessingSecurityScopedResource()
             }
         }
         await performStagedImport(staged, stagingFailures: failures, context: context)

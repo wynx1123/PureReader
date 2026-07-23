@@ -66,14 +66,15 @@ struct ReaderView: View {
             if let chapter = viewModel.currentChapter {
                 AIRewriteSheet(
                     pageText: viewModel.currentPage?.attributedText.string ?? chapter.content,
+                    pageUTF16Offset: viewModel.currentPage?.location ?? 0,
                     chapterContent: chapter.content,
                     chapterTitle: chapter.title,
                     chapterIndex: viewModel.chapterIndex,
                     chapterID: chapter.id,
                     book: viewModel.book,
-                    onConfirm: { original, rewritten in
+                    onConfirm: { application in
                         try await MainActor.run {
-                            try viewModel.applyRewrite(original: original, rewritten: rewritten)
+                            try viewModel.applyRewrite(application)
                         }
                     }
                 )

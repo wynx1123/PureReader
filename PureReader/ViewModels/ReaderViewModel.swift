@@ -36,6 +36,7 @@ final class ReaderViewModel {
 
     private var paginateTask: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
+    private var understandingRefreshTask: Task<Void, Never>?
 
     init(book: Book, context: ModelContext) {
         self.book = book
@@ -81,6 +82,7 @@ final class ReaderViewModel {
 
     func onDisappear() {
         paginateTask?.cancel()
+        understandingRefreshTask?.cancel()
         tts.stop()
         timer.stop()
         persistProgress(immediate: true)
@@ -337,54 +339,148 @@ final class ReaderViewModel {
 
     // MARK: - AI Rewrite
 
-    func applyRewrite(original: String, rewritten: String) throws {
+    func applyRewrite(_ application: RewriteApplication) throws {
         guard let chapter = currentChapter else {
             throw RewriteApplyError.noChapter
         }
         let content = chapter.content
-        guard let range = content.range(of: original) else {
-            // fallback: try trimmed
-            let trimmed = original.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let r2 = content.range(of: trimmed) else {
-                throw RewriteApplyError.originalNotFound
-            }
-            applyReplace(in: chapter, range: r2, rewritten: rewritten, original: trimmed)
+        let original = application.originalText
+        if let range = closestRange(
+            of: original,
+            in: content,
+            expectedUTF16Offset: application.expectedUTF16Offset
+        ) {
+            try applyReplace(
+                in: chapter,
+                range: range,
+                rewritten: application.rewrittenText,
+                original: original,
+                userRequest: application.userRequest,
+                style: application.style
+            )
             return
         }
-        applyReplace(in: chapter, range: range, rewritten: rewritten, original: original)
+
+        let trimmed = original.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              let trimmedRange = closestRange(
+                of: trimmed,
+                in: content,
+                expectedUTF16Offset: application.expectedUTF16Offset
+              ) else {
+            throw RewriteApplyError.originalNotFound
+        }
+        try applyReplace(
+            in: chapter,
+            range: trimmedRange,
+            rewritten: application.rewrittenText,
+            original: trimmed,
+            userRequest: application.userRequest,
+            style: application.style
+        )
+    }
+
+    /// 兼容旧调用方。
+    func applyRewrite(original: String, rewritten: String) throws {
+        try applyRewrite(
+            RewriteApplication(
+                originalText: original,
+                rewrittenText: rewritten,
+                userRequest: "",
+                style: AIConfig.stylePreset,
+                expectedUTF16Offset: currentPage?.location
+            )
+        )
+    }
+
+    private func closestRange(
+        of needle: String,
+        in content: String,
+        expectedUTF16Offset: Int?
+    ) -> Range<String.Index>? {
+        guard !needle.isEmpty else { return nil }
+        let contentLength = (content as NSString).length
+        let needleLength = (needle as NSString).length
+
+        if let expectedUTF16Offset {
+            let location = min(max(0, expectedUTF16Offset), contentLength)
+            if location + needleLength <= contentLength,
+               let exact = Range(
+                    NSRange(location: location, length: needleLength),
+                    in: content
+               ),
+               String(content[exact]) == needle {
+                return exact
+            }
+        }
+
+        var best: (range: Range<String.Index>, distance: Int)?
+        var searchStart = content.startIndex
+        while searchStart < content.endIndex,
+              let found = content.range(
+                of: needle,
+                options: [],
+                range: searchStart..<content.endIndex
+              ) {
+            let offset = content.utf16.distance(
+                from: content.startIndex,
+                to: found.lowerBound
+            )
+            let distance = abs(offset - (expectedUTF16Offset ?? 0))
+            if best == nil || distance < best!.distance {
+                best = (found, distance)
+            }
+            if expectedUTF16Offset == nil { return found }
+            if found.upperBound == content.endIndex { break }
+            searchStart = found.upperBound
+        }
+        return best?.range
     }
 
     private func applyReplace(
         in chapter: Chapter,
         range: Range<String.Index>,
         rewritten: String,
-        original: String
-    ) {
-        var content = chapter.content
-        let utf16Offset = content.utf16.distance(from: content.startIndex, to: range.lowerBound)
-        content.replaceSubrange(range, with: rewritten)
-        chapter.content = content
+        original: String,
+        userRequest: String,
+        style: RewriteStylePreset
+    ) throws {
+        let previousContent = chapter.content
+        var updatedContent = previousContent
+        let utf16Offset = updatedContent.utf16.distance(
+            from: updatedContent.startIndex,
+            to: range.lowerBound
+        )
+        updatedContent.replaceSubrange(range, with: rewritten)
+        chapter.content = updatedContent
 
         let record = RewriteRecord(
             bookID: book.id,
             chapterID: chapter.id,
             originalText: original,
             rewrittenText: rewritten,
-            userRequest: "",
-            stylePreset: AIConfig.stylePreset,
+            userRequest: userRequest,
+            stylePreset: style,
             originalUTF16Offset: utf16Offset
         )
         context.insert(record)
+        do {
+            try context.save()
+        } catch {
+            chapter.content = previousContent
+            context.delete(record)
+            throw RewriteApplyError.saveFailed(error.localizedDescription)
+        }
         trimRewriteHistory()
-
         try? context.save()
 
         BookUnderstandingCoordinator.shared.onChapterRewritten(
             bookID: book.id,
             chapterID: chapter.id,
             chapterIndex: chapter.index,
-            content: content
+            content: updatedContent
         )
+        scheduleUnderstandingRefresh()
 
         // 尽量保持当前页附近
         let restore = book.currentPageOffset
@@ -414,17 +510,32 @@ final class ReaderViewModel {
         guard let chapter = chapters.first(where: { $0.id == record.chapterID }) else {
             throw RewriteApplyError.noChapter
         }
-        var content = chapter.content
-        if let range = content.range(of: record.rewrittenText) {
+        let previousContent = chapter.content
+        var content = previousContent
+        if let range = closestRange(
+            of: record.rewrittenText,
+            in: content,
+            expectedUTF16Offset: record.originalUTF16Offset
+        ) {
             content.replaceSubrange(range, with: record.originalText)
-        } else if let range = content.range(of: record.rewrittenText.trimmingCharacters(in: .whitespacesAndNewlines)) {
+        } else if let range = closestRange(
+            of: record.rewrittenText.trimmingCharacters(in: .whitespacesAndNewlines),
+            in: content,
+            expectedUTF16Offset: record.originalUTF16Offset
+        ) {
             content.replaceSubrange(range, with: record.originalText)
         } else {
             throw RewriteApplyError.originalNotFound
         }
         chapter.content = content
         record.isUndone = true
-        try? context.save()
+        do {
+            try context.save()
+        } catch {
+            chapter.content = previousContent
+            record.isUndone = false
+            throw RewriteApplyError.saveFailed(error.localizedDescription)
+        }
 
         BookUnderstandingCoordinator.shared.onChapterRewritten(
             bookID: book.id,
@@ -432,6 +543,7 @@ final class ReaderViewModel {
             chapterIndex: chapter.index,
             content: content
         )
+        scheduleUnderstandingRefresh()
         if chapter.index == chapterIndex {
             repaginate(restoreOffset: book.currentPageOffset)
         }
@@ -470,6 +582,18 @@ final class ReaderViewModel {
     func toggleFavorite(_ record: RewriteRecord) {
         record.isFavorite.toggle()
         try? context.save()
+    }
+
+    private func scheduleUnderstandingRefresh() {
+        understandingRefreshTask?.cancel()
+        understandingRefreshTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            BookUnderstandingCoordinator.shared.scheduleIfNeeded(
+                book: self.book,
+                context: self.context
+            )
+        }
     }
 
     // MARK: - Persist
@@ -518,11 +642,13 @@ final class ReaderViewModel {
 enum RewriteApplyError: LocalizedError {
     case noChapter
     case originalNotFound
+    case saveFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .noChapter: return String(localized: "当前无章节")
         case .originalNotFound: return String(localized: "未在章节中找到原文，请缩短选择范围后重试")
+        case .saveFailed(let message): return String(localized: "保存改写失败：\(message)")
         }
     }
 }

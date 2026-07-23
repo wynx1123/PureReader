@@ -108,6 +108,17 @@ enum LLMClient {
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
         let (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse,
+           (http.statusCode == 400 || http.statusCode == 422),
+           dims > 0 {
+            // 部分 OpenAI 兼容服务不接受 dimensions 参数，自动降级重试一次。
+            return try await embed(
+                texts: texts,
+                model: model,
+                dimensions: 0,
+                timeout: timeout
+            )
+        }
         try throwIfNeeded(data: data, response: response)
 
         guard

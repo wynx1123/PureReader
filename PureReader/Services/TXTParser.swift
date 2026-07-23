@@ -24,17 +24,37 @@ enum TXTParser {
            let s = String(data: data.dropFirst(3), encoding: .utf8) {
             return normalizeNewlines(s)
         }
+        // UTF-32 BOM
+        if data.starts(with: [0xFF, 0xFE, 0x00, 0x00]),
+           let s = String(data: data, encoding: .utf32LittleEndian),
+           isPlausibleText(s) {
+            return normalizeNewlines(s)
+        }
         // UTF-16 LE/BE BOM
         if data.starts(with: [0xFF, 0xFE]),
-           let s = String(data: data, encoding: .utf16LittleEndian) {
+           let s = String(data: data, encoding: .utf16LittleEndian),
+           isPlausibleText(s) {
             return normalizeNewlines(s)
         }
         if data.starts(with: [0xFE, 0xFF]),
-           let s = String(data: data, encoding: .utf16BigEndian) {
+           let s = String(data: data, encoding: .utf16BigEndian),
+           isPlausibleText(s) {
+            return normalizeNewlines(s)
+        }
+        if data.starts(with: [0x00, 0x00, 0xFE, 0xFF]),
+           let s = String(data: data, encoding: .utf32BigEndian),
+           isPlausibleText(s) {
             return normalizeNewlines(s)
         }
 
-        if let s = String(data: data, encoding: .utf8), !s.isEmpty {
+        // 一些 TXT 没有 UTF-16 BOM，通过奇偶位 NUL 分布识别。
+        if let utf16 = decodeUTF16WithoutBOM(data), isPlausibleText(utf16) {
+            return normalizeNewlines(utf16)
+        }
+
+        if let s = String(data: data, encoding: .utf8),
+           !s.isEmpty,
+           isPlausibleText(s) {
             // 过滤大量替换字符视为失败
             let bad = s.unicodeScalars.filter { $0.value == 0xFFFD }.count
             if bad * 50 < s.count {
@@ -50,7 +70,8 @@ enum TXTParser {
         ]
         for enc in cfEncodings {
             let nsEnc = CFStringConvertEncodingToNSStringEncoding(enc)
-            if let s = NSString(data: data, encoding: nsEnc) as String? {
+            if let s = NSString(data: data, encoding: nsEnc) as String?,
+               isPlausibleText(s) {
                 return normalizeNewlines(s)
             }
         }
@@ -151,6 +172,38 @@ enum TXTParser {
     private static func normalizeNewlines(_ s: String) -> String {
         s.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
+            .replacingOccurrences(of: "\0", with: "")
+    }
+
+    private static func decodeUTF16WithoutBOM(_ data: Data) -> String? {
+        guard data.count >= 4, data.count.isMultiple(of: 2) else { return nil }
+        let sample = Array(data.prefix(min(data.count, 4_096)))
+        var evenNulls = 0
+        var oddNulls = 0
+        for (index, byte) in sample.enumerated() where byte == 0 {
+            if index.isMultiple(of: 2) {
+                evenNulls += 1
+            } else {
+                oddNulls += 1
+            }
+        }
+        let pairCount = max(1, sample.count / 2)
+        if oddNulls > pairCount / 3, evenNulls < pairCount / 10 {
+            return String(data: data, encoding: .utf16LittleEndian)
+        }
+        if evenNulls > pairCount / 3, oddNulls < pairCount / 10 {
+            return String(data: data, encoding: .utf16BigEndian)
+        }
+        return nil
+    }
+
+    private static func isPlausibleText(_ text: String) -> Bool {
+        guard !text.isEmpty else { return false }
+        let scalars = text.unicodeScalars
+        let controls = scalars.filter {
+            $0.value < 0x20 && $0.value != 0x09 && $0.value != 0x0A && $0.value != 0x0D
+        }.count
+        return controls * 100 < max(1, scalars.count)
     }
 }
 

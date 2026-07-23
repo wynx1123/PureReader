@@ -17,12 +17,26 @@ enum BookImportService {
         }
         let sandboxURL = try stageSecurityScopedFile(url)
         defer { try? FileManager.default.removeItem(at: sandboxURL) }
-        return try await parseStagedFile(url: sandboxURL)
+        return try await parseStagedFile(
+            url: sandboxURL,
+            originalFilename: url.lastPathComponent
+        )
     }
 
     /// 暂存到 App Caches；须在 fileImporter completion 仍持有 security scope 时调用。
     static func stageSecurityScopedFile(_ url: URL) throws -> URL {
         let fm = FileManager.default
+        if let sourceValues = try? url.resourceValues(
+            forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey]
+        ) {
+            if sourceValues.isDirectory == true || sourceValues.isRegularFile == false {
+                throw ImportError.unsupportedFormat
+            }
+            if let size = sourceValues.fileSize, size > maxFileBytes {
+                throw ImportError.fileTooLarge
+            }
+        }
+
         guard let caches = fm.urls(for: .cachesDirectory, in: .userDomainMask).first else {
             throw ImportError.unreadableFile(String(localized: "无法取得 App 缓存目录"))
         }
@@ -33,8 +47,11 @@ enum BookImportService {
             throw ImportError.unreadableFile(error.localizedDescription)
         }
 
-        let name = url.lastPathComponent.isEmpty ? "import.bin" : url.lastPathComponent
-        let destination = dir.appendingPathComponent("\(UUID().uuidString)_\(name)")
+        let ext = url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stagedName = ext.isEmpty
+            ? UUID().uuidString
+            : "\(UUID().uuidString).\(ext)"
+        let destination = dir.appendingPathComponent(stagedName)
         var coordinationError: NSError?
         var copyError: Error?
         let coordinator = NSFileCoordinator(filePresenter: nil)
@@ -49,36 +66,52 @@ enum BookImportService {
             }
         }
 
-        if let coordinationError {
-            throw ImportError.accessDenied(coordinationError.localizedDescription)
-        }
-        if let copyError {
+        if copyError != nil {
             // Files 提供者偶尔不支持协调复制；仅在当前安全作用域内用 Data 兜底。
             do {
+                if fm.fileExists(atPath: destination.path) {
+                    try? fm.removeItem(at: destination)
+                }
                 let data = try Data(contentsOf: url, options: [.mappedIfSafe])
                 guard !data.isEmpty else { throw ImportError.emptyFile }
+                guard data.count <= maxFileBytes else { throw ImportError.fileTooLarge }
                 try data.write(to: destination, options: .atomic)
             } catch let error as ImportError {
                 throw error
             } catch {
-                throw ImportError.accessDenied(copyError.localizedDescription)
+                throw ImportError.accessDenied(error.localizedDescription)
             }
+        }
+        if !fm.fileExists(atPath: destination.path), let coordinationError {
+            throw ImportError.accessDenied(coordinationError.localizedDescription)
         }
         guard fm.fileExists(atPath: destination.path) else {
             throw ImportError.accessDenied(String(localized: "未能将所选文件复制到 App"))
+        }
+        if let stagedValues = try? destination.resourceValues(forKeys: [.fileSizeKey]),
+           let stagedSize = stagedValues.fileSize,
+           stagedSize > maxFileBytes {
+            try? fm.removeItem(at: destination)
+            throw ImportError.fileTooLarge
         }
         return destination
     }
 
     /// 已在 App 沙盒中的文件：后台读取和解析，避免文件导入完成后 UI 停滞。
-    static func parseStagedFile(url: URL) async throws -> ParsedBook {
+    static func parseStagedFile(
+        url: URL,
+        originalFilename: String? = nil
+    ) async throws -> ParsedBook {
         try await Task.detached(priority: .userInitiated) {
-            try parseSandboxFile(url: url)
+            try parseSandboxFile(url: url, originalFilename: originalFilename)
         }.value
     }
 
     /// 已在 App 沙盒内的路径（副本）
-    static func parseSandboxFile(url: URL) throws -> ParsedBook {
+    static func parseSandboxFile(
+        url: URL,
+        originalFilename: String? = nil
+    ) throws -> ParsedBook {
         let values = try url.resourceValues(forKeys: [.fileSizeKey, .nameKey])
         if let size = values.fileSize, size > maxFileBytes {
             throw ImportError.fileTooLarge
@@ -92,9 +125,12 @@ enum BookImportService {
         }
         if data.isEmpty { throw ImportError.emptyFile }
 
-        let ext = url.pathExtension.lowercased()
-        let preferred = url.deletingPathExtension().lastPathComponent
-            .removingPercentEncoding ?? url.deletingPathExtension().lastPathComponent
+        let sourceName = originalFilename?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let displayName = sourceName.isEmpty ? url.lastPathComponent : sourceName
+        let displayURL = URL(fileURLWithPath: displayName)
+        let ext = displayURL.pathExtension.lowercased()
+        let preferred = displayURL.deletingPathExtension().lastPathComponent
+            .removingPercentEncoding ?? displayURL.deletingPathExtension().lastPathComponent
 
         switch ext {
         case "txt", "text", "md", "log", "csv":
@@ -148,7 +184,8 @@ enum BookImportService {
         if data.count > maxFileBytes { throw ImportError.fileTooLarge }
         if data.isEmpty { throw ImportError.emptyFile }
 
-        let name = url.deletingPathExtension().lastPathComponent
+        let rawName = url.deletingPathExtension().lastPathComponent
+        let name = rawName.removingPercentEncoding ?? rawName
         let ext = url.pathExtension.lowercased()
         let mime = http.value(forHTTPHeaderField: "Content-Type")?.lowercased() ?? ""
 
@@ -265,21 +302,31 @@ enum BookImportService {
             tags: tags
         )
 
+        context.insert(book)
+
+        let orderedChapters = parsed.chapters.sorted { $0.index < $1.index }
         var chapterModels: [Chapter] = []
-        chapterModels.reserveCapacity(parsed.chapters.count)
-        for pc in parsed.chapters {
-            let ch = Chapter(index: pc.index, title: pc.title, content: pc.content)
+        chapterModels.reserveCapacity(orderedChapters.count)
+        for (normalizedIndex, pc) in orderedChapters.enumerated() {
+            let ch = Chapter(
+                index: normalizedIndex,
+                title: pc.title.isEmpty ? String(localized: "第 \(normalizedIndex + 1) 章") : pc.title,
+                content: pc.content.isEmpty ? " " : pc.content
+            )
             ch.book = book
             chapterModels.append(ch)
             context.insert(ch)
         }
         book.chapters = chapterModels
-        context.insert(book)
         book.filePath = "swiftdata://\(book.id.uuidString)"
 
         do {
             try context.save()
         } catch {
+            for chapter in chapterModels {
+                context.delete(chapter)
+            }
+            context.delete(book)
             throw ImportError.saveFailed(error.localizedDescription)
         }
 

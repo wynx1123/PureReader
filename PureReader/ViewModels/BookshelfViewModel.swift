@@ -188,8 +188,22 @@ final class BookshelfViewModel {
     }
 
     private func performLocalImport(_ urls: [URL], context: ModelContext) async {
-        let staged = urls.map { (filename: $0.lastPathComponent, url: $0) }
-        await performStagedImport(staged, stagingFailures: [], context: context)
+        var staged: [(filename: String, url: URL)] = []
+        var failures: [String] = []
+        for sourceURL in urls {
+            let filename = sourceURL.lastPathComponent
+            let accessed = sourceURL.startAccessingSecurityScopedResource()
+            defer {
+                if accessed { sourceURL.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                let stagedURL = try BookImportService.stageSecurityScopedFile(sourceURL)
+                staged.append((filename, stagedURL))
+            } catch {
+                failures.append("\(filename)：\(diagnosticMessage(for: error))")
+            }
+        }
+        await performStagedImport(staged, stagingFailures: failures, context: context)
     }
 
     private func performStagedImport(
@@ -207,6 +221,7 @@ final class BookshelfViewModel {
         let tags = parseTagsField(pendingTags)
         let group = pendingGroup == BuiltInGroup.default ? nil : pendingGroup
         var importedTitles: [String] = []
+        var importedBooks: [Book] = []
         var failures = stagingFailures
 
         for (index, item) in stagedURLs.enumerated() {
@@ -217,7 +232,10 @@ final class BookshelfViewModel {
             importProgressDetail = filename
 
             do {
-                let parsed = try await BookImportService.parseStagedFile(url: item.url)
+                let parsed = try await BookImportService.parseStagedFile(
+                    url: item.url,
+                    originalFilename: filename
+                )
                 importProgressText = String(localized: "正在保存《\(parsed.title)》")
                 let book = try BookImportService.save(
                     parsed: parsed,
@@ -228,7 +246,7 @@ final class BookshelfViewModel {
                     into: context
                 )
                 importedTitles.append(book.title)
-                BookUnderstandingCoordinator.shared.scheduleIfNeeded(book: book, context: context)
+                importedBooks.append(book)
             } catch {
                 failures.append("\(filename)：\(diagnosticMessage(for: error))")
             }
@@ -246,6 +264,9 @@ final class BookshelfViewModel {
                 details: importedTitles.map { "✓ 《\($0)》" } + failures,
                 isSuccess: failures.isEmpty
             )
+            for book in importedBooks {
+                scheduleUnderstandingAfterImport(book, context: context)
+            }
         } else {
             let message = String(localized: "没有任何书籍被导入。请查看下方诊断信息。")
             importErrorMessage = failures.joined(separator: "\n")
@@ -321,7 +342,7 @@ final class BookshelfViewModel {
                 tags: tags,
                 into: context
             )
-            BookUnderstandingCoordinator.shared.scheduleIfNeeded(book: book, context: context)
+            scheduleUnderstandingAfterImport(book, context: context)
             urlString = ""
             showURLImporter = false
             showAddSheet = false
@@ -337,6 +358,15 @@ final class BookshelfViewModel {
             try BookImportService.deleteBook(book, context: context)
         } catch {
             importErrorMessage = error.localizedDescription
+        }
+    }
+
+    private func scheduleUnderstandingAfterImport(_ book: Book, context: ModelContext) {
+        // 先让导入结果和书架刷新完成，再启动可能较重的全书快照与索引任务。
+        Task { @MainActor [weak book] in
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            guard let book else { return }
+            BookUnderstandingCoordinator.shared.scheduleIfNeeded(book: book, context: context)
         }
     }
 

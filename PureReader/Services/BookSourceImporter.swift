@@ -3,10 +3,13 @@ import SwiftData
 
 /// 多格式书源导入：Legado / 爱阅记 / PureReader JSON
 enum BookSourceImporter {
+    private static let maxDownloadBytes = 10 * 1024 * 1024
 
     // MARK: - Public
 
+    @MainActor
     static func importJSON(_ data: Data, into context: ModelContext) throws -> Int {
+        let data = normalizedJSONData(data)
         // 尝试数组或单对象
         if let arr = try? JSONSerialization.jsonObject(with: data) as? [Any] {
             var count = 0
@@ -17,6 +20,7 @@ enum BookSourceImporter {
                 context.insert(source)
                 count += 1
             }
+            guard count > 0 else { throw ImportError.noValidSources }
             try context.save()
             return count
         }
@@ -28,9 +32,64 @@ enum BookSourceImporter {
         throw ImportError.invalidFormat
     }
 
+    @MainActor
     static func importFromURL(_ url: URL, into context: ModelContext) async throws -> Int {
-        let (data, _) = try await URLSession.shared.data(from: url)
+        guard url.scheme?.lowercased() == "https" else {
+            throw ImportError.invalidURL
+        }
+
+        var request = URLRequest(url: url, timeoutInterval: 30)
+        request.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                + "AppleWebKit/605.1.15 Mobile/15E148 PureReader/1.0",
+            forHTTPHeaderField: "User-Agent"
+        )
+        request.setValue("application/json,text/plain,*/*", forHTTPHeaderField: "Accept")
+
+        let (data, response) = try await download(request)
+        guard let http = response as? HTTPURLResponse else {
+            throw ImportError.invalidResponse
+        }
+        guard (200...299).contains(http.statusCode) else {
+            throw ImportError.httpStatus(http.statusCode)
+        }
+        guard !data.isEmpty else { throw ImportError.emptyResponse }
+        guard data.count <= maxDownloadBytes else { throw ImportError.responseTooLarge }
         return try importJSON(data, into: context)
+    }
+
+    private static func download(_ request: URLRequest) async throws -> (Data, URLResponse) {
+        var lastError: Error?
+        for attempt in 0..<3 {
+            do {
+                return try await URLSession.shared.data(for: request)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+                if attempt < 2 {
+                    try await Task.sleep(nanoseconds: UInt64(attempt + 1) * 400_000_000)
+                }
+            }
+        }
+        throw ImportError.downloadFailed(
+            lastError?.localizedDescription ?? String(localized: "未知网络错误")
+        )
+    }
+
+    private static func normalizedJSONData(_ data: Data) -> Data {
+        var bytes = data
+        if bytes.starts(with: [0xEF, 0xBB, 0xBF]) {
+            bytes.removeFirst(3)
+        }
+        guard var text = String(data: bytes, encoding: .utf8) else { return bytes }
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 部分代理或托管服务会添加常见的 JSON 防劫持前缀。
+        for prefix in [")]}'", "while(1);"] where text.hasPrefix(prefix) {
+            text.removeFirst(prefix.count)
+            text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return text.data(using: .utf8) ?? bytes
     }
 
     static func exportJSON(sources: [BookSource]) throws -> Data {
@@ -299,8 +358,33 @@ enum BookSourceImporter {
 
     enum ImportError: LocalizedError {
         case invalidFormat
+        case noValidSources
+        case invalidURL
+        case invalidResponse
+        case httpStatus(Int)
+        case emptyResponse
+        case responseTooLarge
+        case downloadFailed(String)
+
         var errorDescription: String? {
-            String(localized: "无法识别的书源 JSON 格式")
+            switch self {
+            case .invalidFormat:
+                return String(localized: "无法识别的书源 JSON 格式")
+            case .noValidSources:
+                return String(localized: "JSON 中没有可导入的有效书源")
+            case .invalidURL:
+                return String(localized: "书源地址无效，仅支持 HTTPS")
+            case .invalidResponse:
+                return String(localized: "书源服务器返回了无效响应")
+            case .httpStatus(let code):
+                return String(localized: "书源下载失败：HTTP \(code)")
+            case .emptyResponse:
+                return String(localized: "书源地址返回了空内容")
+            case .responseTooLarge:
+                return String(localized: "书源文件超过 10 MB，已停止导入")
+            case .downloadFailed(let message):
+                return String(localized: "书源下载失败：\(message)")
+            }
         }
     }
 }

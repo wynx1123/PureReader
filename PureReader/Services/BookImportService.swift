@@ -9,13 +9,14 @@ enum BookImportService {
     // MARK: - Public parse
 
     /// 从 fileImporter / 分享扩展等安全作用域 URL 导入。
-    /// 独立调用时由本方法取得 scope；标准 UI 流程会在 completion 同步暂存文件。
+    /// 独立调用时由本方法取得 scope；标准 UI 流程会在 completion 取得 scope，
+    /// 再通过后台协调读取完成暂存。
     static func parseLocalFile(url: URL) async throws -> ParsedBook {
         let accessed = url.startAccessingSecurityScopedResource()
         defer {
             if accessed { url.stopAccessingSecurityScopedResource() }
         }
-        let sandboxURL = try stageSecurityScopedFile(url)
+        let sandboxURL = try await stageSecurityScopedFileAsync(url)
         defer { try? FileManager.default.removeItem(at: sandboxURL) }
         return try await parseStagedFile(
             url: sandboxURL,
@@ -23,7 +24,14 @@ enum BookImportService {
         )
     }
 
-    /// 暂存到 App Caches；须在 fileImporter completion 仍持有 security scope 时调用。
+    /// 在后台暂存到 App Caches。调用方必须在整个 await 期间保持 security scope。
+    static func stageSecurityScopedFileAsync(_ url: URL) async throws -> URL {
+        try await Task.detached(priority: .userInitiated) {
+            try stageSecurityScopedFile(url)
+        }.value
+    }
+
+    /// 同步暂存实现，只在后台任务中调用，避免 iCloud 下载和协调读取阻塞主线程。
     static func stageSecurityScopedFile(_ url: URL) throws -> URL {
         let fm = FileManager.default
         if let sourceValues = try? url.resourceValues(
@@ -55,7 +63,11 @@ enum BookImportService {
         var coordinationError: NSError?
         var copyError: Error?
         let coordinator = NSFileCoordinator(filePresenter: nil)
-        coordinator.coordinate(readingItemAt: url, options: [], error: &coordinationError) { readableURL in
+        coordinator.coordinate(
+            readingItemAt: url,
+            options: [.withoutChanges],
+            error: &coordinationError
+        ) { readableURL in
             do {
                 if fm.fileExists(atPath: destination.path) {
                     try fm.removeItem(at: destination)
@@ -66,7 +78,7 @@ enum BookImportService {
             }
         }
 
-        if copyError != nil {
+        if copyError != nil || !fm.fileExists(atPath: destination.path) {
             // Files 提供者偶尔不支持协调复制；仅在当前安全作用域内用 Data 兜底。
             do {
                 if fm.fileExists(atPath: destination.path) {

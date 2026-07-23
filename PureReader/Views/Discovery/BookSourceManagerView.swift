@@ -218,8 +218,8 @@ struct BookSourceManagerView: View {
                 let accessed = url.startAccessingSecurityScopedResource()
                 defer { if accessed { url.stopAccessingSecurityScopedResource() } }
                 let data = try Data(contentsOf: url)
-                let count = try BookSourceImporter.importJSON(data, into: modelContext)
-                message = String(localized: "成功导入 \(count) 个书源")
+                let result = try BookSourceImporter.importJSON(data, into: modelContext)
+                message = result.message
             } catch {
                 message = error.localizedDescription
             }
@@ -234,8 +234,8 @@ struct BookSourceManagerView: View {
         isBusy = true
         defer { isBusy = false }
         do {
-            let count = try await BookSourceImporter.importFromURL(url, into: modelContext)
-            message = String(localized: "成功导入 \(count) 个书源")
+            let result = try await BookSourceImporter.importFromURL(url, into: modelContext)
+            message = result.message
         } catch {
             message = error.localizedDescription
         }

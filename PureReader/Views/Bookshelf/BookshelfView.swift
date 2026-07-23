@@ -39,19 +39,21 @@ struct BookshelfView: View {
                 prompt: String(localized: "搜索")
             )
             .toolbar { toolbarContent }
-            // 关键：fileImporter 必须在根视图，不要放进 sheet
-            .fileImporter(
-                isPresented: $viewModel.showImporter,
-                allowedContentTypes: BookImportService.allowedContentTypes,
-                allowsMultipleSelection: true
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    // 安全作用域必须在回调当下开启；不可等到 Task 开始后。
-                    viewModel.beginLocalImport(urls, context: modelContext)
-                case .failure(let error):
-                    viewModel.handleFilePickerFailure(error)
-                }
+            // UIKit 文档选择器使用 asCopy：系统先把云端/第三方 Provider 文件复制到
+            // App 可读位置，再通过 delegate 回调，避免 SwiftUI fileImporter 真机静默失效。
+            .sheet(isPresented: $viewModel.showImporter) {
+                BookDocumentPicker(
+                    allowedContentTypes: BookImportService.allowedContentTypes,
+                    allowsMultipleSelection: true,
+                    onPick: { urls in
+                        viewModel.showImporter = false
+                        viewModel.beginLocalImport(urls, context: modelContext)
+                    },
+                    onCancel: {
+                        viewModel.showImporter = false
+                    }
+                )
+                .ignoresSafeArea()
             }
             .sheet(isPresented: $viewModel.showAddSheet) {
                 AddBookSheet(viewModel: viewModel)
@@ -407,6 +409,54 @@ struct BookshelfView: View {
                     .contentShape(Rectangle())
             }
             .accessibilityLabel(String(localized: "添加书籍"))
+        }
+    }
+}
+
+private struct BookDocumentPicker: UIViewControllerRepresentable {
+    let allowedContentTypes: [UTType]
+    let allowsMultipleSelection: Bool
+    let onPick: ([URL]) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick, onCancel: onCancel)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: allowedContentTypes,
+            asCopy: true
+        )
+        picker.allowsMultipleSelection = allowsMultipleSelection
+        picker.shouldShowFileExtensions = true
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(
+        _ uiViewController: UIDocumentPickerViewController,
+        context: Context
+    ) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        private let onPick: ([URL]) -> Void
+        private let onCancel: () -> Void
+
+        init(onPick: @escaping ([URL]) -> Void, onCancel: @escaping () -> Void) {
+            self.onPick = onPick
+            self.onCancel = onCancel
+        }
+
+        func documentPicker(
+            _ controller: UIDocumentPickerViewController,
+            didPickDocumentsAt urls: [URL]
+        ) {
+            onPick(urls)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onCancel()
         }
     }
 }

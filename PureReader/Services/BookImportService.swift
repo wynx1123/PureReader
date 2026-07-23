@@ -35,9 +35,11 @@ enum BookImportService {
     static func stageSecurityScopedFile(_ url: URL) throws -> URL {
         let fm = FileManager.default
         if let sourceValues = try? url.resourceValues(
-            forKeys: [.isDirectoryKey, .isRegularFileKey, .fileSizeKey]
+            forKeys: [.isDirectoryKey, .fileSizeKey]
         ) {
-            if sourceValues.isDirectory == true || sourceValues.isRegularFile == false {
+            // File Provider 的云端占位文件在完成协调读取前，isRegularFile 可能错误地
+            // 报告为 false。这里只明确拒绝目录，文件类型交给实际读取与解析判断。
+            if sourceValues.isDirectory == true {
                 throw ImportError.unsupportedFormat
             }
             if let size = sourceValues.fileSize, size > maxFileBytes {
@@ -72,7 +74,16 @@ enum BookImportService {
                 if fm.fileExists(atPath: destination.path) {
                     try fm.removeItem(at: destination)
                 }
-                try fm.copyItem(at: readableURL, to: destination)
+                do {
+                    try fm.copyItem(at: readableURL, to: destination)
+                } catch {
+                    // 部分 iCloud/第三方 Provider 不允许复制其协调 URL，但允许读取。
+                    // 在协调回调内读取会触发占位文件下载，再写入 App 自己的缓存。
+                    let data = try Data(contentsOf: readableURL, options: [.mappedIfSafe])
+                    guard !data.isEmpty else { throw ImportError.emptyFile }
+                    guard data.count <= maxFileBytes else { throw ImportError.fileTooLarge }
+                    try data.write(to: destination, options: .atomic)
+                }
             } catch {
                 copyError = error
             }

@@ -47,6 +47,8 @@ final class BookSource {
     var bookURL: String
     var tocURL: String
     var contentURL: String
+    /// 书源级请求头，保存为 JSON 字符串以兼容 Legado 的 header 字段。
+    var headerJSON: String = ""
     /// JSON 序列化的 ParseRule
     var ruleJSON: String
     var enabled: Bool
@@ -87,6 +89,7 @@ final class BookSource {
         bookURL: String = "",
         tocURL: String = "",
         contentURL: String = "",
+        headerJSON: String = "",
         rules: ParseRule = .empty,
         enabled: Bool = true,
         format: BookSourceFormat = .pureReader,
@@ -100,6 +103,7 @@ final class BookSource {
         self.bookURL = bookURL
         self.tocURL = tocURL
         self.contentURL = contentURL
+        self.headerJSON = headerJSON
         if let data = try? JSONEncoder().encode(rules),
            let s = String(data: data, encoding: .utf8) {
             self.ruleJSON = s

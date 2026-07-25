@@ -19,8 +19,8 @@ struct BookSourceManagerView: View {
     /// 可选社区合集（raw JSON），用户确认后从 URL 导入
     private let communityPresets: [(name: String, url: String)] = [
         (
-            String(localized: "示例书源合集（需自备有效 JSON）"),
-            "https://raw.githubusercontent.com/wynx1123/PureReader/main/docs/sample-sources.json"
+            String(localized: "PureReader 链路验证书源"),
+            "https://raw.githubusercontent.com/wynx1123/PureReader/develop/docs/sample-sources.json"
         )
     ]
 
@@ -41,7 +41,7 @@ struct BookSourceManagerView: View {
                     Button {
                         showCommunity = true
                     } label: {
-                        Label(String(localized: "社区书源（URL 预设）"), systemImage: "globe")
+                        Label(String(localized: "验证远程书源"), systemImage: "network")
                     }
                     Button {
                         exportSources()
@@ -57,7 +57,7 @@ struct BookSourceManagerView: View {
                     }
                     .disabled(sources.isEmpty || isBusy)
                 } footer: {
-                    Text(String(localized: "检测会对每个启用书源发起一次试搜索。无效源会标记并关闭。"))
+                    Text(String(localized: "检测会对每个启用书源发起一次试搜索。请求成功但无结果时会保持启用；只有请求失败才会关闭。"))
                 }
 
                 Section(String(localized: "已安装（\(sources.count)）")) {
@@ -69,6 +69,11 @@ struct BookSourceManagerView: View {
                             sourceRow(source)
                         }
                     }
+                }
+                Section {
+                    Text(String(localized: "重复导入同一合集会更新现有书源并重新评估兼容性，不会重复创建。含任意 JavaScript/WebView 的搜索规则会自动停用。"))
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 }
             }
             .navigationTitle(String(localized: "书源管理"))
@@ -98,10 +103,10 @@ struct BookSourceManagerView: View {
                     Task { @MainActor in await importFromURL() }
                 }
             } message: {
-                Text(String(localized: "粘贴书源 JSON 的 HTTPS 地址"))
+                Text(String(localized: "粘贴书源 JSON 的 HTTP/HTTPS 地址；HTTP 连接不会加密"))
             }
             .confirmationDialog(
-                String(localized: "社区书源"),
+                String(localized: "验证远程书源"),
                 isPresented: $showCommunity,
                 titleVisibility: .visible
             ) {
@@ -113,7 +118,7 @@ struct BookSourceManagerView: View {
                 }
                 Button(String(localized: "取消"), role: .cancel) {}
             } message: {
-                Text(String(localized: "从公开 HTTPS JSON 导入；无效地址会提示失败。"))
+                Text(String(localized: "导入仓库内的静态验证书源，用于检查搜索、目录和正文拉取。"))
             }
             .alert(
                 String(localized: "提示"),
@@ -257,18 +262,19 @@ struct BookSourceManagerView: View {
     private func validateOne(_ source: BookSource) async {
         validatingID = source.id
         defer { validatingID = nil }
-        let ok = await BookSourceEngine.validate(source)
-        source.isValid = ok
-        if !ok {
+        let result = await BookSourceEngine.validateDetailed(source)
+        source.isValid = result.isReachable
+        source.lastCheckedAt = Date()
+        if !result.isReachable {
             source.enabled = false
-            source.comment = String(localized: "检测未通过（试搜索无结果）")
+            source.comment = String(localized: "检测未通过：\(result.message)")
         } else if source.comment.contains("检测未通过") {
             source.comment = ""
         }
         try? modelContext.save()
-        message = ok
-            ? String(localized: "「\(source.name)」检测通过")
-            : String(localized: "「\(source.name)」检测失败，已关闭")
+        message = result.isReachable
+            ? String(localized: "「\(source.name)」\(result.message)")
+            : String(localized: "「\(source.name)」检测失败，已关闭：\(result.message)")
     }
 
     @MainActor
@@ -278,14 +284,15 @@ struct BookSourceManagerView: View {
         var pass = 0
         var fail = 0
         for source in sources where source.enabled {
-            let ok = await BookSourceEngine.validate(source)
-            source.isValid = ok
+            let result = await BookSourceEngine.validateDetailed(source)
+            source.isValid = result.isReachable
             source.lastCheckedAt = Date()
-            if ok {
+            if result.isReachable {
                 pass += 1
             } else {
                 fail += 1
                 source.enabled = false
+                source.comment = String(localized: "检测未通过：\(result.message)")
             }
         }
         try? modelContext.save()

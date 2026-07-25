@@ -1,0 +1,12 @@
+{
+  "chapters": [
+    {
+      "title": "第一章 搜索与目录",
+      "url": "https://raw.githubusercontent.com/wynx1123/PureReader/develop/docs/sample-chapter-1.html"
+    },
+    {
+      "title": "第二章 正文拉取",
+      "url": "https://raw.githubusercontent.com/wynx1123/PureReader/develop/docs/sample-chapter-2.html"
+    }
+  ]
+}

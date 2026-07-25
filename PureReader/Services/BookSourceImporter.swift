@@ -9,12 +9,16 @@ enum BookSourceImporter {
         var changed: Int
         var enabled: Int
         var disabled: Int
+        var skipped: Int
 
         var message: String {
+            let skippedNote = skipped > 0
+                ? String(localized: "，另有 \(skipped) 个条目格式无效已跳过")
+                : ""
             if disabled > 0 {
-                return String(localized: "已导入或更新 \(changed) 个书源，其中 \(enabled) 个可启用，\(disabled) 个因兼容性限制已停用")
+                return String(localized: "已导入或更新 \(changed) 个书源，其中 \(enabled) 个可启用，\(disabled) 个因兼容性限制已停用") + skippedNote
             }
-            return String(localized: "成功导入或更新 \(changed) 个书源")
+            return String(localized: "成功导入或更新 \(changed) 个书源") + skippedNote
         }
     }
 
@@ -23,15 +27,11 @@ enum BookSourceImporter {
     @MainActor
     static func importJSON(_ data: Data, into context: ModelContext) throws -> ImportResult {
         let data = normalizedJSONData(data)
-        let root = try JSONSerialization.jsonObject(with: data)
-        let objects: [[String: Any]]
-        if let array = root as? [[String: Any]] {
-            objects = array
-        } else if let object = root as? [String: Any] {
-            objects = [object]
-        } else {
+        guard let root = try? JSONSerialization.jsonObject(with: data) else {
             throw ImportError.invalidFormat
         }
+        let objects = sourceObjects(from: root)
+        guard !objects.isEmpty else { throw ImportError.invalidFormat }
 
         let candidates = objects.compactMap { try? parseOne($0) }
         guard !candidates.isEmpty else { throw ImportError.noValidSources }
@@ -73,7 +73,8 @@ enum BookSourceImporter {
             return ImportResult(
                 changed: changed,
                 enabled: candidates.filter { $0.enabled && $0.isValid }.count,
-                disabled: candidates.filter { !$0.enabled || !$0.isValid }.count
+                disabled: candidates.filter { !$0.enabled || !$0.isValid }.count,
+                skipped: objects.count - candidates.count
             )
         } catch {
             context.rollback()
@@ -83,7 +84,8 @@ enum BookSourceImporter {
 
     @MainActor
     static func importFromURL(_ url: URL, into context: ModelContext) async throws -> ImportResult {
-        guard url.scheme?.lowercased() == "https" else {
+        let url = normalizedRemoteURL(url)
+        guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
             throw ImportError.invalidURL
         }
 
@@ -105,6 +107,18 @@ enum BookSourceImporter {
         guard !data.isEmpty else { throw ImportError.emptyResponse }
         guard data.count <= maxDownloadBytes else { throw ImportError.responseTooLarge }
         return try importJSON(data, into: context)
+    }
+
+    private static func normalizedRemoteURL(_ url: URL) -> URL {
+        guard url.host?.lowercased() == "github.com" else { return url }
+        let parts = url.pathComponents
+        guard parts.count >= 6, parts[3].lowercased() == "blob" else { return url }
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "raw.githubusercontent.com"
+        let rawParts = [parts[1], parts[2]] + Array(parts.dropFirst(4))
+        components.path = "/" + rawParts.joined(separator: "/")
+        return components.url ?? url
     }
 
     private static func download(_ request: URLRequest) async throws -> (Data, URLResponse) {
@@ -164,8 +178,32 @@ enum BookSourceImporter {
         return text.data(using: .utf8) ?? bytes
     }
 
+    private static func sourceObjects(from root: Any) -> [[String: Any]] {
+        if let array = root as? [[String: Any]] { return array }
+        guard let object = root as? [String: Any] else { return [] }
+        if isSourceObject(object) { return [object] }
+        for key in ["bookSources", "bookSource", "sources", "data", "items"] {
+            if let array = object[key] as? [[String: Any]] { return array }
+            if let nested = object[key] as? [String: Any] {
+                let sources = sourceObjects(from: nested)
+                if !sources.isEmpty { return sources }
+            }
+        }
+        return []
+    }
+
+    private static func isSourceObject(_ object: [String: Any]) -> Bool {
+        object["bookSourceName"] != nil
+            || object["bookSourceUrl"] != nil
+            || object["searchUrl"] != nil
+            || object["searchURL"] != nil
+            || object["search_url"] != nil
+    }
+
     private static func identityKey(_ source: BookSource) -> String {
-        let base = sanitizedBaseURL(source.bookURL).lowercased()
+        let base = sanitizedBaseURL(source.bookURL)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            .lowercased()
         let fallback = source.searchURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return source.formatRaw + "|" + (base.isEmpty ? source.name.lowercased() + "|" + fallback : base)
     }
@@ -177,6 +215,7 @@ enum BookSourceImporter {
         target.bookURL = source.bookURL
         target.tocURL = source.tocURL
         target.contentURL = source.contentURL
+        target.headerJSON = source.headerJSON
         target.ruleJSON = source.ruleJSON
         target.enabled = source.enabled
         target.formatRaw = source.formatRaw
@@ -188,7 +227,7 @@ enum BookSourceImporter {
     private static func sanitizedBaseURL(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let withoutMetadata = trimmed.components(separatedBy: "##").first ?? trimmed
-        return withoutMetadata.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return withoutMetadata.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func compatibilityIssue(
@@ -199,20 +238,22 @@ enum BookSourceImporter {
         if lower.contains("@js:") || lower.contains("<js>") || lower.contains("</js>") {
             return String(localized: "包含 JavaScript 搜索逻辑")
         }
-        if bool(object, "enabledCookieJar") == true,
-           lower.contains("webview") || lower.contains("startbrowser") {
+        if lower.contains("webview") || lower.contains("startbrowser") {
             return String(localized: "依赖 WebView/Cookie 验证")
         }
-        guard requestDescriptor(searchURL, baseURL: sanitizedBaseURL(string(object, "bookSourceUrl") ?? "")) != nil else {
+        guard BookSourceEngine.canBuildSearchRequest(
+            raw: searchURL,
+            baseURL: sanitizedBaseURL(string(object, "bookSourceUrl") ?? "")
+        ) else {
             return String(localized: "搜索请求格式暂不支持")
         }
 
-        let ruleObjects = ["ruleSearch", "ruleBookInfo", "ruleToc", "ruleContent"]
-            .compactMap { object[$0] as? [String: Any] }
-        let ruleValues = ruleObjects.flatMap { $0.values.compactMap { $0 as? String } }
+        let searchRules = object["ruleSearch"] as? [String: Any] ?? [:]
+        let ruleValues = searchRules.values.compactMap { $0 as? String }
         if ruleValues.contains(where: {
-            $0.contains("@js:") || $0.contains("<js>")
-                || $0.contains("@put:") || $0.contains("@get:")
+            let lowerRule = $0.lowercased()
+            return lowerRule.contains("@js:") || lowerRule.contains("<js>")
+                || lowerRule.contains("@put:") || lowerRule.contains("@get:")
         }) {
             return String(localized: "解析规则包含 JavaScript")
         }
@@ -220,39 +261,33 @@ enum BookSourceImporter {
             let lowerRule = rule.lowercased()
             return lowerRule.hasPrefix("//")
                 || lowerRule.contains("@xpath:")
-                || lowerRule.range(
-                    of: #"(^|[.@])(class|tag|id)\."#,
-                    options: .regularExpression
-                ) != nil
-                || lowerRule.contains("##")
         }) {
-            return String(localized: "解析规则使用了尚未支持的 Legado DSL/XPath")
+            return String(localized: "搜索规则使用了 XPath")
         }
         return nil
     }
 
-    private static func requestDescriptor(_ raw: String, baseURL: String) -> (url: URL, method: String)? {
-        let path = raw.components(separatedBy: ",{").first?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let resolved: URL?
-        if let absolute = URL(string: path), absolute.scheme != nil {
-            resolved = absolute
-        } else if let base = URL(string: baseURL) {
-            resolved = URL(string: path, relativeTo: base)?.absoluteURL
-        } else {
-            resolved = nil
+    private static func readingCompatibilityIssue(_ object: [String: Any]) -> String? {
+        let ruleObjects = ["ruleBookInfo", "ruleToc", "ruleContent"]
+            .compactMap { object[$0] as? [String: Any] }
+        let values = ruleObjects.flatMap { $0.values.compactMap { $0 as? String } }
+        if values.contains(where: {
+            let lower = $0.lowercased()
+            return lower.contains("@js:") || lower.contains("<js>")
+                || lower.contains("webview") || lower.contains("@put:") || lower.contains("@get:")
+        }) {
+            return String(localized: "目录或正文依赖脚本/WebView")
         }
-        guard let url = resolved, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
-            return nil
-        }
-        let method = raw.range(of: #"['\"]method['\"]\s*:\s*['\"]post['\"]"#, options: [.regularExpression, .caseInsensitive]) == nil
-            ? "GET"
-            : "POST"
-        return (url, method)
+        return nil
     }
 
     private static func appendCompatibilityNote(_ comment: String, issue: String) -> String {
         let note = String(localized: "PureReader 暂不兼容：\(issue)。该书源已自动停用。")
+        return comment.isEmpty ? note : comment + "\n\n" + note
+    }
+
+    private static func appendPartialCompatibilityNote(_ comment: String, issue: String) -> String {
+        let note = String(localized: "PureReader 部分兼容：\(issue)。可显示搜索结果，但加入书架可能失败。")
         return comment.isEmpty ? note : comment + "\n\n" + note
     }
 
@@ -265,6 +300,7 @@ enum BookSourceImporter {
                 "bookUrl": s.bookURL,
                 "tocUrl": s.tocURL,
                 "contentUrl": s.contentURL,
+                "header": s.headerJSON,
                 "enabled": s.enabled,
                 "format": s.format.rawValue,
                 "comment": s.comment,
@@ -344,11 +380,12 @@ enum BookSourceImporter {
             throw ImportError.invalidFormat
         }
         let group = string(obj, "bookSourceGroup") ?? string(obj, "group") ?? ""
-        let search = string(obj, "searchUrl") ?? ""
+        let search = string(obj, "searchUrl") ?? string(obj, "searchURL") ?? ""
         let baseURL = sanitizedBaseURL(string(obj, "bookSourceUrl") ?? "")
-        guard !search.isEmpty, !baseURL.isEmpty else { throw ImportError.invalidFormat }
+        guard !search.isEmpty else { throw ImportError.invalidFormat }
         let comment = string(obj, "bookSourceComment") ?? string(obj, "comment") ?? ""
         let compatibility = compatibilityIssue(searchURL: search, object: obj)
+        let readingIssue = readingCompatibilityIssue(obj)
         let enabled = (bool(obj, "enabled") ?? true) && compatibility == nil
         let weight = int(obj, "customOrder") ?? int(obj, "weight") ?? 0
 
@@ -386,10 +423,13 @@ enum BookSourceImporter {
             bookURL: baseURL,
             tocURL: "",
             contentURL: "",
+            headerJSON: headerStorageString(obj["header"]),
             rules: rules,
             enabled: enabled,
             format: .legado,
-            comment: compatibility.map { appendCompatibilityNote(comment, issue: $0) } ?? comment,
+            comment: compatibility.map { appendCompatibilityNote(comment, issue: $0) }
+                ?? readingIssue.map { appendPartialCompatibilityNote(comment, issue: $0) }
+                ?? comment,
             weight: weight
         )
         source.isValid = compatibility == nil
@@ -416,6 +456,7 @@ enum BookSourceImporter {
             name: name,
             groupName: string(obj, "group") ?? "爱阅记",
             searchURL: search,
+            headerJSON: headerStorageString(obj["header"] ?? obj["headers"]),
             rules: rules,
             enabled: bool(obj, "enabled") ?? true,
             format: .aiYueJi,
@@ -469,6 +510,7 @@ enum BookSourceImporter {
             bookURL: string(obj, "bookUrl") ?? "",
             tocURL: string(obj, "tocUrl") ?? "",
             contentURL: string(obj, "contentUrl") ?? "",
+            headerJSON: headerStorageString(obj["header"] ?? obj["headers"]),
             rules: rules,
             enabled: bool(obj, "enabled") ?? true,
             format: .pureReader,
@@ -525,6 +567,17 @@ enum BookSourceImporter {
         )
     }
 
+    private static func headerStorageString(_ value: Any?) -> String {
+        if let text = value as? String { return text }
+        guard let value,
+              JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else {
+            return ""
+        }
+        return text
+    }
+
     private static func compact(_ dict: [String: String?]) -> [String: Any] {
         var out: [String: Any] = [:]
         for (k, v) in dict {
@@ -572,7 +625,7 @@ enum BookSourceImporter {
             case .noValidSources:
                 return String(localized: "JSON 中没有可导入的有效书源")
             case .invalidURL:
-                return String(localized: "书源地址无效，仅支持 HTTPS")
+                return String(localized: "书源地址无效，仅支持 HTTP 或 HTTPS")
             case .invalidResponse:
                 return String(localized: "书源服务器返回了无效响应")
             case .httpStatus(let code):

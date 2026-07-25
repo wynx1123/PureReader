@@ -1,8 +1,48 @@
 import Foundation
 import SwiftData
 
+struct BookSourceSearchFailure: Sendable {
+    var sourceName: String
+    var reason: String
+}
+
+struct BookSourceSearchReport: Sendable {
+    var results: [SourceSearchResult]
+    var attemptedCount: Int
+    var failures: [BookSourceSearchFailure]
+}
+
+struct BookSourceValidationResult: Sendable {
+    var isReachable: Bool
+    var resultCount: Int
+    var message: String
+}
+
 /// 书源网络引擎：搜索 / 目录 / 正文（15s 超时 + 最多 2 次重试）
 enum BookSourceEngine {
+    private struct SearchSource: Sendable {
+        var id: UUID
+        var name: String
+        var searchURL: String
+        var bookURL: String
+        var headerJSON: String
+        var rules: ParseRule
+
+        init(_ source: BookSource) {
+            id = source.id
+            name = source.name
+            searchURL = source.searchURL
+            bookURL = source.bookURL
+            headerJSON = source.headerJSON
+            rules = source.rules
+        }
+    }
+
+    private struct SearchBatch: Sendable {
+        var results: [SourceSearchResult]
+        var failure: BookSourceSearchFailure?
+    }
+
     private static let session: URLSession = {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 15
@@ -15,42 +55,88 @@ enum BookSourceEngine {
 
     // MARK: - Search
 
-    static func search(keyword: String, sources: [BookSource], page: Int = 1) async -> [SourceSearchResult] {
+    static func search(
+        keyword: String,
+        sources: [BookSource],
+        page: Int = 1
+    ) async -> BookSourceSearchReport {
         let key = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { return [] }
-        let enabled = sources.filter { $0.enabled && $0.isValid && !$0.searchURL.isEmpty }
-        guard !enabled.isEmpty else { return [] }
+        guard !key.isEmpty else {
+            return BookSourceSearchReport(results: [], attemptedCount: 0, failures: [])
+        }
+        // isValid is a health indicator, not a permanent block. A user can retry a
+        // previously failed source without having to re-import it first.
+        let enabled = sources.filter { $0.enabled && !$0.searchURL.isEmpty }
+        guard !enabled.isEmpty else {
+            return BookSourceSearchReport(results: [], attemptedCount: 0, failures: [])
+        }
+        let searchable = enabled.map { SearchSource($0) }
 
-        return await withTaskGroup(of: [SourceSearchResult].self) { group in
-            for source in enabled {
+        return await withTaskGroup(of: SearchBatch.self) { group in
+            for source in searchable {
                 group.addTask {
-                    (try? await searchOne(keyword: key, source: source, page: page)) ?? []
+                    do {
+                        return SearchBatch(
+                            results: try await searchOne(keyword: key, source: source, page: page),
+                            failure: nil
+                        )
+                    } catch is CancellationError {
+                        return SearchBatch(results: [], failure: nil)
+                    } catch {
+                        return SearchBatch(
+                            results: [],
+                            failure: BookSourceSearchFailure(
+                                sourceName: source.name,
+                                reason: error.localizedDescription
+                            )
+                        )
+                    }
                 }
             }
             var all: [SourceSearchResult] = []
+            var failures: [BookSourceSearchFailure] = []
             for await batch in group {
-                all.append(contentsOf: batch)
+                all.append(contentsOf: batch.results)
+                if let failure = batch.failure {
+                    failures.append(failure)
+                }
             }
             // 去重 by name+author
             var seen = Set<String>()
-            return all.filter { r in
+            let unique = all.filter { r in
                 let k = r.name + "|" + r.author
                 if seen.contains(k) { return false }
                 seen.insert(k)
                 return true
             }
+            return BookSourceSearchReport(
+                results: unique,
+                attemptedCount: searchable.count,
+                failures: failures.sorted { $0.sourceName < $1.sourceName }
+            )
         }
     }
 
-    private static func searchOne(keyword: String, source: BookSource, page: Int) async throws -> [SourceSearchResult] {
-        let urlString = source.searchURL
-            .replacingOccurrences(of: "{{key}}", with: urlEncode(keyword))
-            .replacingOccurrences(of: "{{page}}", with: "\(page)")
-        // Legado uses {{key}} or {key}
-        let u2 = urlString
-            .replacingOccurrences(of: "{key}", with: urlEncode(keyword))
-            .replacingOccurrences(of: "{page}", with: "\(page)")
-        guard let request = makeSearchRequest(raw: u2, baseURL: source.bookURL) else {
+    private static func searchOne(
+        keyword: String,
+        source: BookSource,
+        page: Int
+    ) async throws -> [SourceSearchResult] {
+        try await searchOne(keyword: keyword, source: SearchSource(source), page: page)
+    }
+
+    private static func searchOne(
+        keyword: String,
+        source: SearchSource,
+        page: Int
+    ) async throws -> [SourceSearchResult] {
+        guard let request = makeSearchRequest(
+            raw: source.searchURL,
+            baseURL: source.bookURL,
+            keyword: keyword,
+            page: page,
+            sourceHeaderJSON: source.headerJSON
+        ) else {
             throw BookSourceError.unsupportedRequest
         }
         guard let url = request.url else { throw BookSourceError.invalidURL }
@@ -86,7 +172,11 @@ enum BookSourceEngine {
         return results
     }
 
-    private static func parseSearchFromRoot(body: String, url: URL, source: BookSource) -> [SourceSearchResult] {
+    private static func parseSearchFromRoot(
+        body: String,
+        url: URL,
+        source: SearchSource
+    ) -> [SourceSearchResult] {
         let rules = source.rules
         // JSON arrays of books via bookUrl list
         let names = RuleParser.getStrings(from: body, rule: rules.name, baseURL: url)
@@ -131,11 +221,11 @@ enum BookSourceEngine {
             throw BookSourceError.invalidURL
         }
         // If tocURL empty in rules, fetch book page and extract tocUrl then list
-        var body = try await fetchString(url: url)
+        var body = try await fetchString(url: url, sourceHeaderJSON: source.headerJSON)
         if let tocRule = rules.tocUrl, !tocRule.isEmpty,
            let next = RuleParser.getString(from: body, rule: tocRule, baseURL: url),
            let nextURL = URL(string: next.hasPrefix("http") ? next : RuleParser.resolveURL(next, base: url)) {
-            body = try await fetchString(url: nextURL)
+            body = try await fetchString(url: nextURL, sourceHeaderJSON: source.headerJSON)
             return parseChapters(body: body, base: nextURL, rules: rules)
         }
         return parseChapters(body: body, base: url, rules: rules)
@@ -175,7 +265,7 @@ enum BookSourceEngine {
             .replacingOccurrences(of: "{chapterUrl}", with: chapterURL)
         if urlString.isEmpty { urlString = chapterURL }
         guard let url = URL(string: urlString) else { throw BookSourceError.invalidURL }
-        let body = try await fetchString(url: url)
+        let body = try await fetchString(url: url, sourceHeaderJSON: source.headerJSON)
         var text = RuleParser.getString(from: body, rule: rules.content, baseURL: url)
             ?? RuleParser.stripTags(body)
         text = RuleParser.applyReplacements(text, replaceRegex: rules.replaceRegex)
@@ -185,11 +275,33 @@ enum BookSourceEngine {
     // MARK: - Validate source
 
     static func validate(_ source: BookSource, keyword: String = "修仙") async -> Bool {
+        (await validateDetailed(source, keyword: keyword)).isReachable
+    }
+
+    static func validateDetailed(
+        _ source: BookSource,
+        keyword: String = "修仙"
+    ) async -> BookSourceValidationResult {
         do {
             let results = try await searchOne(keyword: keyword, source: source, page: 1)
-            return !results.isEmpty
+            if results.isEmpty {
+                return BookSourceValidationResult(
+                    isReachable: true,
+                    resultCount: 0,
+                    message: String(localized: "请求成功，但试搜索没有结果；书源保持启用")
+                )
+            }
+            return BookSourceValidationResult(
+                isReachable: true,
+                resultCount: results.count,
+                message: String(localized: "请求成功，解析到 \(results.count) 条结果")
+            )
         } catch {
-            return false
+            return BookSourceValidationResult(
+                isReachable: false,
+                resultCount: 0,
+                message: error.localizedDescription
+            )
         }
     }
 
@@ -237,8 +349,15 @@ enum BookSourceEngine {
 
     // MARK: - Network
 
-    private static func fetchString(url: URL) async throws -> String {
-        try await fetchString(request: URLRequest(url: url))
+    private static func fetchString(
+        url: URL,
+        sourceHeaderJSON: String = ""
+    ) async throws -> String {
+        var request = URLRequest(url: url)
+        for (name, value) in parseHeaders(sourceHeaderJSON) {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+        return try await fetchString(request: request)
     }
 
     private static func fetchString(request initialRequest: URLRequest) async throws -> String {
@@ -267,20 +386,62 @@ enum BookSourceEngine {
         throw lastError
     }
 
-    private static func makeSearchRequest(raw: String, baseURL: String) -> URLRequest? {
+    static func canBuildSearchRequest(raw: String, baseURL: String) -> Bool {
+        makeSearchRequest(
+            raw: raw,
+            baseURL: baseURL,
+            keyword: "PureReader",
+            page: 1,
+            sourceHeaderJSON: ""
+        ) != nil
+    }
+
+    private struct RequestOptions {
+        var method = "GET"
+        var body: String?
+        var charset = "utf-8"
+        var headers: [String: String] = [:]
+    }
+
+    private static func makeSearchRequest(
+        raw: String,
+        baseURL: String,
+        keyword: String,
+        page: Int,
+        sourceHeaderJSON: String
+    ) -> URLRequest? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.lowercased().contains("@js:"),
-              !trimmed.lowercased().contains("<js>") else {
+        let lower = trimmed.lowercased()
+        guard !lower.contains("@js:"),
+              !lower.contains("<js>"),
+              !lower.contains("</js>") else {
             return nil
         }
 
-        let descriptorStart = trimmed.range(of: ",{")
-        let path = descriptorStart.map { String(trimmed[..<$0.lowerBound]) } ?? trimmed
-        let descriptor = descriptorStart.map { String(trimmed[$0.lowerBound...].dropFirst()) } ?? ""
+        let separator = trimmed.range(
+            of: #"\s*,\s*(?=\{)"#,
+            options: .regularExpression
+        )
+        let pathTemplate = separator.map { String(trimmed[..<$0.lowerBound]) } ?? trimmed
+        let descriptorTemplate = separator.map { String(trimmed[$0.upperBound...]) } ?? ""
+        let path = replacePlaceholders(
+            in: pathTemplate,
+            keyword: percentEncodeQueryValue(keyword),
+            page: page
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        let descriptor = replacePlaceholders(
+            in: descriptorTemplate,
+            keyword: escapedJSONString(keyword),
+            page: page
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.contains("{{"), !path.contains("}}"),
+              !descriptor.contains("{{"), !descriptor.contains("}}") else {
+            return nil
+        }
         let url: URL?
         if let absolute = URL(string: path), absolute.scheme != nil {
             url = absolute
-        } else if let base = URL(string: baseURL) {
+        } else if let base = URL(string: baseURL.hasSuffix("/") ? baseURL : baseURL + "/") {
             url = URL(string: path, relativeTo: base)?.absoluteURL
         } else {
             url = nil
@@ -289,36 +450,124 @@ enum BookSourceEngine {
             return nil
         }
 
+        guard let options = requestOptions(from: descriptor) else { return nil }
         var request = URLRequest(url: url)
-        let method = captureValue("method", in: descriptor)?.uppercased() ?? "GET"
-        guard method == "GET" || method == "POST" else { return nil }
-        request.httpMethod = method
-
-        if method == "POST" {
-            guard let body = captureValue("body", in: descriptor) else { return nil }
-            let charset = captureValue("charset", in: descriptor)?.lowercased() ?? "utf-8"
-            let encoding: String.Encoding = charset.contains("gb")
-                ? String.Encoding(
-                    rawValue: CFStringConvertEncodingToNSStringEncoding(
-                        CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
-                    )
-                )
-                : .utf8
-            guard let bodyData = body.data(using: encoding) else { return nil }
-            request.httpBody = bodyData
-            request.setValue(
-                "application/x-www-form-urlencoded; charset=\(charset)",
-                forHTTPHeaderField: "Content-Type"
-            )
-        }
-        for (name, value) in captureHeaders(in: descriptor) {
+        request.httpMethod = options.method
+        for (name, value) in parseHeaders(sourceHeaderJSON) {
             request.setValue(value, forHTTPHeaderField: name)
+        }
+        for (name, value) in options.headers {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
+
+        if options.method == "POST" {
+            let body = options.body ?? ""
+            let encoding = stringEncoding(for: options.charset)
+            let contentType = request.value(forHTTPHeaderField: "Content-Type")?.lowercased()
+            let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            let preparedBody: String
+            if contentType?.contains("application/x-www-form-urlencoded") == true {
+                preparedBody = formEncoded(body, encoding: encoding)
+            } else if contentType != nil {
+                preparedBody = body
+            } else if (trimmedBody.hasPrefix("{") && trimmedBody.hasSuffix("}"))
+                        || (trimmedBody.hasPrefix("[") && trimmedBody.hasSuffix("]")) {
+                preparedBody = body
+                request.setValue(
+                    "application/json; charset=\(options.charset)",
+                    forHTTPHeaderField: "Content-Type"
+                )
+            } else if trimmedBody.hasPrefix("<") {
+                preparedBody = body
+                request.setValue(
+                    "application/xml; charset=\(options.charset)",
+                    forHTTPHeaderField: "Content-Type"
+                )
+            } else {
+                preparedBody = formEncoded(body, encoding: encoding)
+                request.setValue(
+                    "application/x-www-form-urlencoded; charset=\(options.charset)",
+                    forHTTPHeaderField: "Content-Type"
+                )
+            }
+            guard let bodyData = preparedBody.data(using: encoding) else { return nil }
+            request.httpBody = bodyData
         }
         return request
     }
 
+    private static func requestOptions(from descriptor: String) -> RequestOptions? {
+        guard !descriptor.isEmpty else { return RequestOptions() }
+        if let data = descriptor.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            let unsupportedKeys = ["js", "webJs", "bodyJs", "dnsIp", "type"]
+            guard !unsupportedKeys.contains(where: { meaningfulValue(value($0, in: object)) }),
+                  !isTruthy(value("webView", in: object)) else {
+                return nil
+            }
+            var options = RequestOptions()
+            options.method = stringValue(value("method", in: object))?.uppercased() ?? "GET"
+            guard ["GET", "POST", "HEAD"].contains(options.method) else { return nil }
+            options.charset = stringValue(value("charset", in: object))?.lowercased() ?? "utf-8"
+            options.body = serializedValue(value("body", in: object))
+            options.headers = parseHeaders(value("headers", in: object))
+            return options
+        }
+
+        // A few older sources use single-quoted, non-strict JSON. This fallback
+        // intentionally accepts only their simple string options.
+        let method = captureValue("method", in: descriptor)?.uppercased()
+        let body = captureValue("body", in: descriptor)
+        let charset = captureValue("charset", in: descriptor)?.lowercased()
+        let headers = captureHeaders(in: descriptor)
+        guard method != nil || body != nil || charset != nil || !headers.isEmpty else {
+            return nil
+        }
+        let resolvedMethod = method ?? "GET"
+        guard ["GET", "POST", "HEAD"].contains(resolvedMethod) else { return nil }
+        return RequestOptions(
+            method: resolvedMethod,
+            body: body,
+            charset: charset ?? "utf-8",
+            headers: headers
+        )
+    }
+
+    private static func parseHeaders(_ value: Any?) -> [String: String] {
+        if let headers = value as? [String: Any] {
+            return sanitizeHeaders(headers)
+        }
+        guard var text = value as? String else { return [:] }
+        text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return [:] }
+        if !text.hasPrefix("{") {
+            text = "{" + text + "}"
+        }
+        guard let data = text.data(using: .utf8),
+              let headers = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
+        }
+        return sanitizeHeaders(headers)
+    }
+
+    private static func sanitizeHeaders<Value>(_ headers: [String: Value]) -> [String: String] {
+        let blocked = Set(["host", "content-length", "connection", "transfer-encoding"])
+        var result: [String: String] = [:]
+        for (name, rawValue) in headers {
+            let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedName.isEmpty,
+                  !blocked.contains(trimmedName.lowercased()),
+                  !trimmedName.contains("\r"), !trimmedName.contains("\n"),
+                  let headerValue = stringValue(rawValue),
+                  !headerValue.contains("\r"), !headerValue.contains("\n") else {
+                continue
+            }
+            result[trimmedName] = headerValue
+        }
+        return result
+    }
+
     private static func captureHeaders(in descriptor: String) -> [String: String] {
-        let allowed = Set(["user-agent", "referer", "accept", "accept-language", "origin"])
         guard let outer = try? NSRegularExpression(
             pattern: #"['\"]headers['\"]\s*:\s*\{([^}]*)\}"#,
             options: [.caseInsensitive]
@@ -343,10 +592,9 @@ enum BookSourceEngine {
         ) where pair.range(at: 1).location != NSNotFound
             && pair.range(at: 2).location != NSNotFound {
             let name = (body as NSString).substring(with: pair.range(at: 1))
-            guard allowed.contains(name.lowercased()) else { continue }
             headers[name] = (body as NSString).substring(with: pair.range(at: 2))
         }
-        return headers
+        return sanitizeHeaders(headers)
     }
 
     private static func captureValue(_ key: String, in descriptor: String) -> String? {
@@ -365,8 +613,103 @@ enum BookSourceEngine {
         return (descriptor as NSString).substring(with: match.range(at: 1))
     }
 
-    private static func urlEncode(_ s: String) -> String {
-        s.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? s
+    private static func value(_ key: String, in object: [String: Any]) -> Any? {
+        object.first { $0.key.caseInsensitiveCompare(key) == .orderedSame }?.value
+    }
+
+    private static func meaningfulValue(_ value: Any?) -> Bool {
+        guard let value else { return false }
+        if value is NSNull { return false }
+        if let text = value as? String {
+            return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        return true
+    }
+
+    private static func isTruthy(_ value: Any?) -> Bool {
+        if let flag = value as? Bool { return flag }
+        if let number = value as? NSNumber { return number.boolValue }
+        if let text = value as? String {
+            return !text.isEmpty && text.lowercased() != "false" && text != "0"
+        }
+        return false
+    }
+
+    private static func stringValue(_ value: Any?) -> String? {
+        if let text = value as? String { return text }
+        if let number = value as? NSNumber { return number.stringValue }
+        return nil
+    }
+
+    private static func serializedValue(_ value: Any?) -> String? {
+        guard let value, !(value is NSNull) else { return nil }
+        if let text = value as? String { return text }
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value),
+              let text = String(data: data, encoding: .utf8) else {
+            return stringValue(value)
+        }
+        return text
+    }
+
+    private static func replacePlaceholders(
+        in template: String,
+        keyword: String,
+        page: Int
+    ) -> String {
+        template
+            .replacingOccurrences(of: "{{key}}", with: keyword)
+            .replacingOccurrences(of: "{{page}}", with: "\(page)")
+            .replacingOccurrences(of: "{key}", with: keyword)
+            .replacingOccurrences(of: "{page}", with: "\(page)")
+    }
+
+    private static func escapedJSONString(_ value: String) -> String {
+        guard let data = try? JSONEncoder().encode(value),
+              let encoded = String(data: data, encoding: .utf8),
+              encoded.count >= 2 else {
+            return value
+        }
+        return String(encoded.dropFirst().dropLast())
+    }
+
+    private static func percentEncodeQueryValue(_ value: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=+?#")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
+
+    private static func stringEncoding(for charset: String) -> String.Encoding {
+        if charset.lowercased().contains("gb") {
+            return String.Encoding(
+                rawValue: CFStringConvertEncodingToNSStringEncoding(
+                    CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+                )
+            )
+        }
+        return .utf8
+    }
+
+    private static func formEncoded(_ body: String, encoding: String.Encoding) -> String {
+        body.split(separator: "&", omittingEmptySubsequences: false).map { field in
+            let parts = field.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+            let key = percentEncodeFormComponent(String(parts[0]), encoding: encoding)
+            guard parts.count == 2 else { return key }
+            return key + "=" + percentEncodeFormComponent(String(parts[1]), encoding: encoding)
+        }.joined(separator: "&")
+    }
+
+    private static func percentEncodeFormComponent(
+        _ value: String,
+        encoding: String.Encoding
+    ) -> String {
+        guard let data = value.data(using: encoding) else { return value }
+        let unreserved = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._*%".utf8)
+        return data.map { byte in
+            if unreserved.contains(byte) { return String(UnicodeScalar(byte)) }
+            if byte == 0x20 { return "+" }
+            return String(format: "%%%02X", byte)
+        }.joined()
     }
 }
 

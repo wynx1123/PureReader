@@ -26,9 +26,14 @@ final class DiscoveryViewModel {
             return
         }
         sourceCache = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
-        let enabled = sources.filter(\.enabled)
+        let enabled = sources.filter { $0.enabled && !$0.searchURL.isEmpty }
         guard !enabled.isEmpty else {
-            errorMessage = String(localized: "请先在书源管理中启用至少一个书源")
+            let incompatible = sources.filter { !$0.isValid }.count
+            if !sources.isEmpty, incompatible == sources.count {
+                errorMessage = String(localized: "已安装 \(sources.count) 个书源，但都因脚本或规则兼容性被停用。请在书源管理中重新导入以重新评估，或导入无 JavaScript 的书源。")
+            } else {
+                errorMessage = String(localized: "已安装 \(sources.count) 个书源，但没有启用的书源。请前往书源管理启用。")
+            }
             return
         }
         isSearching = true
@@ -36,13 +41,25 @@ final class DiscoveryViewModel {
         statusMessage = nil
         searchTask = Task {
             defer { isSearching = false }
-            let items = await BookSourceEngine.search(keyword: kw, sources: enabled)
+            let report = await BookSourceEngine.search(keyword: kw, sources: enabled)
             guard !Task.isCancelled else { return }
-            results = items
-            if items.isEmpty {
-                statusMessage = String(localized: "未找到结果（请检查书源是否可用）")
+            results = report.results
+            if report.attemptedCount > 0,
+               report.failures.count == report.attemptedCount {
+                let details = report.failures.prefix(3).map {
+                    "\($0.sourceName)：\($0.reason)"
+                }.joined(separator: "\n")
+                errorMessage = String(localized: "所有已启用书源均拉取失败")
+                    + (details.isEmpty ? "" : "\n\n" + details)
+                statusMessage = nil
+            } else if report.results.isEmpty {
+                let succeeded = report.attemptedCount - report.failures.count
+                statusMessage = String(localized: "\(succeeded) 个书源请求成功，但没有解析到匹配结果")
             } else {
-                statusMessage = String(localized: "找到 \(items.count) 条结果")
+                let failedNote = report.failures.isEmpty
+                    ? ""
+                    : String(localized: "，\(report.failures.count) 个书源失败")
+                statusMessage = String(localized: "找到 \(report.results.count) 条结果") + failedNote
             }
         }
     }

@@ -20,7 +20,7 @@ struct BookSourceManagerView: View {
     private let communityPresets: [(name: String, url: String)] = [
         (
             String(localized: "PureReader 链路验证书源"),
-            "https://raw.githubusercontent.com/wynx1123/PureReader/develop/docs/sample-sources.json"
+            "https://cdn.jsdelivr.net/gh/wynx1123/PureReader@develop/docs/sample-sources.json"
         )
     ]
 

@@ -29,6 +29,7 @@ final class ReaderViewModel {
     var showAIHistory = false
     private(set) var selectedRewriteText = ""
     private(set) var selectedRewriteOffset: Int?
+    var ttsErrorMessage: String?
     var isTTSSpeaking = false
     var isTTSPaused = false
 
@@ -48,13 +49,19 @@ final class ReaderViewModel {
         self.chapters = (book.chapters ?? []).sorted { $0.index < $1.index }
         self.chapterIndex = min(max(0, book.currentChapterIndex), max(0, chapters.count - 1))
         timer.attach(book: book, context: context)
-        tts.configure(rate: settings.ttsRate, voiceIdentifier: settings.ttsVoice.isEmpty ? nil : settings.ttsVoice)
+        configureTTS()
         tts.onFinishUtterance = { [weak self] in
             self?.syncTTSFlags()
             self?.handleTTSFinished()
         }
         tts.onBoundary = { [weak self] relativeOffset in
             self?.handleTTSBoundary(relativeOffset: relativeOffset)
+        }
+        tts.onError = { [weak self] message in
+            guard let self else { return }
+            self.syncTTSFlags()
+            self.showTTSBar = false
+            self.ttsErrorMessage = message
         }
     }
 
@@ -282,14 +289,29 @@ final class ReaderViewModel {
 
     func setTTSRate(_ value: Double) {
         settings.ttsRate = min(2.0, max(0.5, value))
-        tts.configure(rate: settings.ttsRate, voiceIdentifier: settings.ttsVoice.isEmpty ? nil : settings.ttsVoice)
+        configureTTS()
         saveSettings()
     }
 
     func setTTSVoice(_ id: String) {
         settings.ttsVoice = id
-        tts.configure(rate: settings.ttsRate, voiceIdentifier: id.isEmpty ? nil : id)
+        configureTTS()
         saveSettings()
+    }
+
+    func setTTSProvider(_ provider: TTSProvider) {
+        guard provider != settings.ttsProvider else { return }
+        if tts.isSpeaking || tts.isPaused {
+            stopTTS()
+        }
+        settings.ttsProvider = provider
+        settings.ttsVoice = provider.defaultVoice
+        configureTTS()
+        saveSettings()
+    }
+
+    var availableTTSVoices: [TTSVoiceOption] {
+        TTSEngine.availableVoices(for: settings.ttsProvider)
     }
 
     // MARK: - TTS
@@ -310,10 +332,17 @@ final class ReaderViewModel {
 
     func startTTSFromCurrentPage() {
         guard let chapter = currentChapter else { return }
+        guard NetworkTTSConfig.isConfigured(for: settings.ttsProvider) else {
+            ttsErrorMessage = String(
+                localized: "请先在设置的 AI 与语音页面配置 \(settings.ttsProvider.displayName)"
+            )
+            showTTSBar = false
+            return
+        }
         ttsContinuationTask?.cancel()
         showTTSBar = true
         let offset = currentPage?.location ?? 0
-        tts.configure(rate: settings.ttsRate, voiceIdentifier: settings.ttsVoice.isEmpty ? nil : settings.ttsVoice)
+        configureTTS()
         tts.speak(
             text: chapter.content,
             bookTitle: book.title,
@@ -361,6 +390,14 @@ final class ReaderViewModel {
         } else {
             showTTSBar = false
         }
+    }
+
+    private func configureTTS() {
+        tts.configure(
+            rate: settings.ttsRate,
+            provider: settings.ttsProvider,
+            voiceIdentifier: settings.ttsVoice.isEmpty ? nil : settings.ttsVoice
+        )
     }
 
 

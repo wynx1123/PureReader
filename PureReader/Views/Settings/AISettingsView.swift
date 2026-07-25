@@ -10,7 +10,14 @@ struct AISettingsView: View {
     @State private var style = AIConfig.stylePreset
     @State private var temperature = AIConfig.temperature
     @State private var maxContextTokens = Double(AIConfig.maxContextTokens)
+    @State private var openAITTSBaseURL = NetworkTTSConfig.openAIBaseURL
+    @State private var openAITTSAPIKey = NetworkTTSConfig.openAIAPIKey
+    @State private var openAITTSModel = NetworkTTSConfig.openAIModel
+    @State private var miMoTTSBaseURL = NetworkTTSConfig.miMoBaseURL
+    @State private var miMoTTSAPIKey = NetworkTTSConfig.miMoAPIKey
+    @State private var miMoTTSModel = NetworkTTSConfig.miMoModel
     @State private var showKey = false
+    @State private var showTTSKeys = false
     @State private var testMessage: String?
     @State private var isTesting = false
 
@@ -78,6 +85,61 @@ struct AISettingsView: View {
                 }
             }
 
+            Section(String(localized: "OpenAI 兼容语音")) {
+                TextField(String(localized: "TTS Base URL"), text: $openAITTSBaseURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+
+                HStack {
+                    Group {
+                        if showTTSKeys {
+                            TextField(String(localized: "TTS API Key"), text: $openAITTSAPIKey)
+                        } else {
+                            SecureField(String(localized: "TTS API Key"), text: $openAITTSAPIKey)
+                        }
+                    }
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                    Button {
+                        showTTSKeys.toggle()
+                    } label: {
+                        Image(systemName: showTTSKeys ? "eye.slash" : "eye")
+                    }
+                    .accessibilityLabel(String(localized: "显示语音密钥"))
+                }
+
+                TextField(String(localized: "TTS 模型"), text: $openAITTSModel)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+            }
+
+            Section(String(localized: "小米 MiMo 语音")) {
+                TextField(String(localized: "MiMo Base URL"), text: $miMoTTSBaseURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+
+                if showTTSKeys {
+                    TextField(String(localized: "MiMo API Key"), text: $miMoTTSAPIKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } else {
+                    SecureField(String(localized: "MiMo API Key"), text: $miMoTTSAPIKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+
+                TextField(String(localized: "MiMo TTS 模型"), text: $miMoTTSModel)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                Text(String(localized: "MiMo-V2 系列已下线，请使用 mimo-v2.5-tts。"))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+
             Section(String(localized: "全书理解")) {
                 Toggle(String(localized: "AI 理解本书（向量 + 记忆锚点）"), isOn: $enableBookUnderstanding)
                 Text(String(localized: "开启后会在后台静默索引与摘要，不阻塞阅读。短篇(<2.5万字)跳过向量索引。"))
@@ -119,6 +181,8 @@ struct AISettingsView: View {
                 Text(String(localized: "• Chat: POST {base}/chat/completions"))
                 Text(String(localized: "• Embeddings: POST {base}/embeddings"))
                 Text(String(localized: "• 支持第三方兼容网关（改 Base URL 与模型名即可）"))
+                Text(String(localized: "• TTS: POST {base}/audio/speech"))
+                Text(String(localized: "• MiMo TTS: POST {base}/chat/completions"))
             }
             .font(.caption)
         }
@@ -138,6 +202,12 @@ struct AISettingsView: View {
         style = AIConfig.stylePreset
         temperature = AIConfig.temperature
         maxContextTokens = Double(AIConfig.maxContextTokens)
+        openAITTSBaseURL = NetworkTTSConfig.openAIBaseURL
+        openAITTSAPIKey = NetworkTTSConfig.openAIAPIKey
+        openAITTSModel = NetworkTTSConfig.openAIModel
+        miMoTTSBaseURL = NetworkTTSConfig.miMoBaseURL
+        miMoTTSAPIKey = NetworkTTSConfig.miMoAPIKey
+        miMoTTSModel = NetworkTTSConfig.miMoModel
     }
 
     private func save() {
@@ -150,6 +220,12 @@ struct AISettingsView: View {
         AIConfig.stylePreset = style
         AIConfig.temperature = temperature
         AIConfig.maxContextTokens = Int(maxContextTokens)
+        NetworkTTSConfig.openAIBaseURL = openAITTSBaseURL
+        NetworkTTSConfig.openAIAPIKey = openAITTSAPIKey
+        NetworkTTSConfig.openAIModel = openAITTSModel
+        NetworkTTSConfig.miMoBaseURL = miMoTTSBaseURL
+        NetworkTTSConfig.miMoAPIKey = miMoTTSAPIKey
+        NetworkTTSConfig.miMoModel = miMoTTSModel
     }
 
     private func testConnection() async {

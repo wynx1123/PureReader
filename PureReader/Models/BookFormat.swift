@@ -68,6 +68,30 @@ enum PageTurnMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
+enum TTSProvider: String, Codable, CaseIterable, Identifiable, Sendable {
+    case system
+    case openAICompatible
+    case xiaomiMiMo
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .system: return String(localized: "系统语音")
+        case .openAICompatible: return String(localized: "OpenAI 兼容")
+        case .xiaomiMiMo: return String(localized: "小米 MiMo")
+        }
+    }
+
+    var defaultVoice: String {
+        switch self {
+        case .system: return ""
+        case .openAICompatible: return "marin"
+        case .xiaomiMiMo: return "mimo_default"
+        }
+    }
+}
+
 /// 书架排序
 enum BookshelfSort: String, CaseIterable, Identifiable, Sendable {
     case lastRead

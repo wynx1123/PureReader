@@ -109,6 +109,15 @@ struct ReaderSettingsPanel: View {
                 }
 
                 Section(String(localized: "听书")) {
+                    Picker(String(localized: "语音引擎"), selection: Binding(
+                        get: { viewModel.settings.ttsProvider },
+                        set: { viewModel.setTTSProvider($0) }
+                    )) {
+                        ForEach(TTSProvider.allCases) { provider in
+                            Text(provider.displayName).tag(provider)
+                        }
+                    }
+
                     HStack {
                         Text(String(localized: "语速"))
                         Slider(
@@ -128,10 +137,27 @@ struct ReaderSettingsPanel: View {
                         get: { viewModel.settings.ttsVoice },
                         set: { viewModel.setTTSVoice($0) }
                     )) {
-                        Text(String(localized: "系统默认")).tag("")
-                        ForEach(TTSEngine.availableChineseVoices(), id: \.identifier) { voice in
-                            Text(voice.name).tag(voice.identifier)
+                        if viewModel.settings.ttsProvider == .system {
+                            Text(String(localized: "系统默认")).tag("")
                         }
+                        ForEach(viewModel.availableTTSVoices) { voice in
+                            Text(voice.name).tag(voice.id)
+                        }
+                    }
+
+                    if viewModel.settings.ttsProvider == .openAICompatible {
+                        TextField(String(localized: "自定义音色 ID"), text: Binding(
+                            get: { viewModel.settings.ttsVoice },
+                            set: { viewModel.setTTSVoice($0) }
+                        ))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    }
+
+                    if viewModel.settings.ttsProvider != .system {
+                        Label(String(localized: "AI 合成语音"), systemImage: "waveform.badge.sparkles")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }

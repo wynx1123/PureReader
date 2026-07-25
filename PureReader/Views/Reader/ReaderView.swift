@@ -88,6 +88,14 @@ struct ReaderView: View {
         .sheet(isPresented: $viewModel.showAIHistory) {
             RewriteHistoryView(viewModel: viewModel)
         }
+        .alert(String(localized: "听书失败"), isPresented: Binding(
+            get: { viewModel.ttsErrorMessage != nil },
+            set: { if !$0 { viewModel.ttsErrorMessage = nil } }
+        )) {
+            Button(String(localized: "好"), role: .cancel) {}
+        } message: {
+            Text(viewModel.ttsErrorMessage ?? "")
+        }
         .background {
             GeometryReader { geo in
                 Color.clear

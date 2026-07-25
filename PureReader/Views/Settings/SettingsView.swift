@@ -13,7 +13,7 @@ struct SettingsView: View {
                     NavigationLink {
                         AISettingsView()
                     } label: {
-                        Label(String(localized: "AI 改写与向量"), systemImage: "sparkles")
+                        Label(String(localized: "AI 与语音"), systemImage: "sparkles")
                     }
                 } header: {
                     Text(String(localized: "功能"))

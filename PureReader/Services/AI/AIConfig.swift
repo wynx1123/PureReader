@@ -136,6 +136,115 @@ enum AIRewriteConstants {
     static let chunkOverlap = 64
 }
 
+enum NetworkTTSConfig {
+    private static let defaults = UserDefaults.standard
+
+    private enum Key {
+        static let openAIBaseURL = "tts.openAI.baseURL"
+        static let openAIAPIKey = "tts.openAI.apiKey"
+        static let openAIModel = "tts.openAI.model"
+        static let miMoBaseURL = "tts.miMo.baseURL"
+        static let miMoAPIKey = "tts.miMo.apiKey"
+        static let miMoModel = "tts.miMo.model"
+    }
+
+    static var openAIBaseURL: String {
+        get { value(for: Key.openAIBaseURL, fallback: "https://api.openai.com/v1") }
+        set { defaults.set(clean(newValue), forKey: Key.openAIBaseURL) }
+    }
+
+    static var openAIAPIKey: String {
+        get { keychainValue(for: Key.openAIAPIKey) }
+        set { setKeychainValue(newValue, for: Key.openAIAPIKey) }
+    }
+
+    static var openAIModel: String {
+        get { value(for: Key.openAIModel, fallback: "gpt-4o-mini-tts") }
+        set { defaults.set(clean(newValue), forKey: Key.openAIModel) }
+    }
+
+    static var miMoBaseURL: String {
+        get { value(for: Key.miMoBaseURL, fallback: "https://api.xiaomimimo.com/v1") }
+        set { defaults.set(clean(newValue), forKey: Key.miMoBaseURL) }
+    }
+
+    static var miMoAPIKey: String {
+        get { keychainValue(for: Key.miMoAPIKey) }
+        set { setKeychainValue(newValue, for: Key.miMoAPIKey) }
+    }
+
+    static var miMoModel: String {
+        get { value(for: Key.miMoModel, fallback: "mimo-v2.5-tts") }
+        set { defaults.set(clean(newValue), forKey: Key.miMoModel) }
+    }
+
+    static func isConfigured(for provider: TTSProvider) -> Bool {
+        switch provider {
+        case .system:
+            return true
+        case .openAICompatible:
+            return !openAIAPIKey.isEmpty && resolvedBaseURL(for: provider) != nil
+        case .xiaomiMiMo:
+            return !miMoAPIKey.isEmpty && resolvedBaseURL(for: provider) != nil
+        }
+    }
+
+    static func resolvedBaseURL(for provider: TTSProvider) -> URL? {
+        let raw: String
+        switch provider {
+        case .system: return nil
+        case .openAICompatible: raw = openAIBaseURL
+        case .xiaomiMiMo: raw = miMoBaseURL
+        }
+        guard let url = URL(string: clean(raw)),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              url.host != nil
+        else { return nil }
+        return url
+    }
+
+    static func apiKey(for provider: TTSProvider) -> String {
+        switch provider {
+        case .system: return ""
+        case .openAICompatible: return openAIAPIKey
+        case .xiaomiMiMo: return miMoAPIKey
+        }
+    }
+
+    static func model(for provider: TTSProvider) -> String {
+        switch provider {
+        case .system: return ""
+        case .openAICompatible: return openAIModel
+        case .xiaomiMiMo: return miMoModel
+        }
+    }
+
+    private static func clean(_ value: String) -> String {
+        var result = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        while result.hasSuffix("/") { result.removeLast() }
+        return result
+    }
+
+    private static func value(for key: String, fallback: String) -> String {
+        let stored = clean(defaults.string(forKey: key) ?? "")
+        return stored.isEmpty ? fallback : stored
+    }
+
+    private static func keychainValue(for key: String) -> String {
+        KeychainManager.get(key)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    }
+
+    private static func setKeychainValue(_ value: String, for key: String) {
+        let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if cleaned.isEmpty {
+            KeychainManager.delete(key)
+        } else {
+            KeychainManager.set(cleaned, forKey: key)
+        }
+    }
+}
+
 enum RewriteStylePreset: String, CaseIterable, Identifiable, Sendable {
     case `default`
     case wuxia       // 金庸风

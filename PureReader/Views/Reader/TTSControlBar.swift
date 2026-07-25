@@ -2,7 +2,14 @@ import SwiftUI
 
 struct TTSControlBar: View {
     @Bindable var viewModel: ReaderViewModel
+    @ObservedObject private var tts: TTSEngine
     let background: BackgroundType
+
+    init(viewModel: ReaderViewModel, background: BackgroundType) {
+        self.viewModel = viewModel
+        self.background = background
+        _tts = ObservedObject(wrappedValue: viewModel.tts)
+    }
 
     var body: some View {
         HStack(spacing: 20) {
@@ -16,10 +23,17 @@ struct TTSControlBar: View {
             Button {
                 viewModel.toggleTTS()
             } label: {
-                Image(systemName: playIcon)
-                    .font(.title2)
-                    .frame(width: 56, height: 56)
-                    .background(Circle().fill(Color.accentColor.opacity(0.15)))
+                Group {
+                    if tts.isLoading {
+                        ProgressView()
+                            .tint(Color.readerForeground(background))
+                    } else {
+                        Image(systemName: playIcon)
+                            .font(.title2)
+                    }
+                }
+                .frame(width: 56, height: 56)
+                .background(Circle().fill(Color.accentColor.opacity(0.15)))
             }
             .accessibilityLabel(viewModel.isTTSSpeaking && !viewModel.isTTSPaused
                                 ? String(localized: "暂停")

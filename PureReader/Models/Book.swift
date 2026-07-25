@@ -143,6 +143,7 @@ final class ReadingSettings {
     var showHeader: Bool = true
     var showPageNumber: Bool = true
     var ttsRate: Double
+    var ttsProviderRaw: String = TTSProvider.system.rawValue
     var ttsVoice: String
 
     var pageMargin: MarginMode {
@@ -160,6 +161,11 @@ final class ReadingSettings {
         set { pageTurnModeRaw = newValue.rawValue }
     }
 
+    var ttsProvider: TTSProvider {
+        get { TTSProvider(rawValue: ttsProviderRaw) ?? .system }
+        set { ttsProviderRaw = newValue.rawValue }
+    }
+
     init(
         fontSize: Double = 18,
         lineSpacing: Double = 1.6,
@@ -169,6 +175,7 @@ final class ReadingSettings {
         showHeader: Bool = true,
         showPageNumber: Bool = true,
         ttsRate: Double = 0.5,
+        ttsProvider: TTSProvider = .system,
         ttsVoice: String = ""
     ) {
         self.fontSize = fontSize
@@ -179,6 +186,7 @@ final class ReadingSettings {
         self.showHeader = showHeader
         self.showPageNumber = showPageNumber
         self.ttsRate = ttsRate
+        self.ttsProviderRaw = ttsProvider.rawValue
         self.ttsVoice = ttsVoice
     }
 }

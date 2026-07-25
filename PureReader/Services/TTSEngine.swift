@@ -18,6 +18,7 @@ final class TTSEngine: NSObject, ObservableObject {
 
     private let synthesizer = AVSpeechSynthesizer()
     private var currentText: String = ""
+    private var currentUtterance: AVSpeechUtterance?
     private var bookTitle: String = ""
     private var chapterTitle: String = ""
 
@@ -43,6 +44,7 @@ final class TTSEngine: NSObject, ObservableObject {
         startOffset: Int = 0
     ) {
         stop()
+        activateAudioSession()
         self.spokenOffset = startOffset
         self.bookTitle = bookTitle
         self.chapterTitle = chapterTitle
@@ -62,6 +64,7 @@ final class TTSEngine: NSObject, ObservableObject {
             utterance.voice = zh
         }
 
+        currentUtterance = utterance
         updateNowPlaying(elapsed: 0, duration: Double(slice.count) / 12.0)
         synthesizer.speak(utterance)
         isSpeaking = true
@@ -89,11 +92,13 @@ final class TTSEngine: NSObject, ObservableObject {
     }
 
     func stop() {
+        currentUtterance = nil
         synthesizer.stopSpeaking(at: .immediate)
         isSpeaking = false
         isPaused = false
         spokenOffset = 0
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        deactivateAudioSession()
     }
 
     static func availableVoices(languagePrefix: String = "zh") -> [AVSpeechSynthesisVoice] {
@@ -113,11 +118,34 @@ final class TTSEngine: NSObject, ObservableObject {
 
     private func configureAudioSession() {
         do {
+            try AVAudioSession.sharedInstance().setCategory(
+                .playback,
+                mode: .spokenAudio,
+                options: [.duckOthers]
+            )
+        } catch {
+            // 会话失败不阻断阅读
+        }
+    }
+
+    private func activateAudioSession() {
+        do {
             let session = AVAudioSession.sharedInstance()
             try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
             try session.setActive(true, options: [])
         } catch {
             // 会话失败不阻断阅读
+        }
+    }
+
+    private func deactivateAudioSession() {
+        do {
+            try AVAudioSession.sharedInstance().setActive(
+                false,
+                options: [.notifyOthersOnDeactivation]
+            )
+        } catch {
+            // 停止状态已经同步；音频会话释放失败不影响界面关闭。
         }
     }
 
@@ -159,8 +187,12 @@ extension TTSEngine: AVSpeechSynthesizerDelegate {
         didFinish utterance: AVSpeechUtterance
     ) {
         Task { @MainActor in
+            guard utterance === self.currentUtterance else { return }
+            self.currentUtterance = nil
             self.isSpeaking = false
             self.isPaused = false
+            MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+            self.deactivateAudioSession()
             self.onFinishUtterance?()
         }
     }
@@ -171,6 +203,7 @@ extension TTSEngine: AVSpeechSynthesizerDelegate {
         utterance: AVSpeechUtterance
     ) {
         Task { @MainActor in
+            guard utterance === self.currentUtterance else { return }
             // characterRange 相对 utterance 文本；换算为全文 offset 由调用方处理
             self.onBoundary?(characterRange.location)
             self.updateNowPlaying(
@@ -185,6 +218,8 @@ extension TTSEngine: AVSpeechSynthesizerDelegate {
         didCancel utterance: AVSpeechUtterance
     ) {
         Task { @MainActor in
+            guard utterance === self.currentUtterance else { return }
+            self.currentUtterance = nil
             self.isSpeaking = false
             self.isPaused = false
         }

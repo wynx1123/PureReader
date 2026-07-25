@@ -59,6 +59,23 @@ struct ReaderSettingsPanel: View {
                             Text(mode.displayName).tag(mode)
                         }
                     }
+                    .pickerStyle(.segmented)
+                }
+
+                Section(String(localized: "页面信息")) {
+                    Toggle(isOn: Binding(
+                        get: { viewModel.settings.showHeader },
+                        set: { viewModel.setShowHeader($0) }
+                    )) {
+                        Label(String(localized: "显示书名与章节"), systemImage: "text.alignleft")
+                    }
+
+                    Toggle(isOn: Binding(
+                        get: { viewModel.settings.showPageNumber },
+                        set: { viewModel.setShowPageNumber($0) }
+                    )) {
+                        Label(String(localized: "显示页码"), systemImage: "number")
+                    }
                 }
 
                 Section(String(localized: "背景")) {

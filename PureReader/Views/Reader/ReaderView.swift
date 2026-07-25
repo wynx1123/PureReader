@@ -8,6 +8,7 @@ struct ReaderView: View {
 
     @State private var viewModel: ReaderViewModel
     @State private var curlIndex: Int = 0
+    @State private var verticalPageID: Int?
 
     init(book: Book, context: ModelContext) {
         _viewModel = State(initialValue: ReaderViewModel(book: book, context: context))
@@ -27,9 +28,8 @@ struct ReaderView: View {
                     .tint(Color.readerForeground(bg))
             }
 
-            // 触控层：左/中/右
-            if !viewModel.showSettings && !viewModel.showChapterList {
-                tapZones
+            if !viewModel.selectedRewriteText.isEmpty {
+                rewriteSelectionAction
             }
 
             // 顶部/底部 Chrome
@@ -62,11 +62,13 @@ struct ReaderView: View {
         .sheet(isPresented: $viewModel.showChapterList) {
             chapterListSheet
         }
-        .sheet(isPresented: $viewModel.showAIRewrite) {
+        .sheet(isPresented: $viewModel.showAIRewrite, onDismiss: {
+            viewModel.clearRewriteSelection()
+        }) {
             if let chapter = viewModel.currentChapter {
                 AIRewriteSheet(
-                    pageText: viewModel.currentPage?.attributedText.string ?? chapter.content,
-                    pageUTF16Offset: viewModel.currentPage?.location ?? 0,
+                    pageText: viewModel.selectedRewriteText,
+                    pageUTF16Offset: viewModel.selectedRewriteOffset ?? 0,
                     chapterContent: chapter.content,
                     chapterTitle: chapter.title,
                     chapterIndex: viewModel.chapterIndex,
@@ -85,18 +87,6 @@ struct ReaderView: View {
         }
         .sheet(isPresented: $viewModel.showAIHistory) {
             RewriteHistoryView(viewModel: viewModel)
-        }
-        .contextMenu {
-            Button {
-                viewModel.showAIRewrite = true
-            } label: {
-                Label(String(localized: "AI 改写"), systemImage: "sparkles")
-            }
-            Button {
-                viewModel.showAIHistory = true
-            } label: {
-                Label(String(localized: "改写历史"), systemImage: "clock.arrow.circlepath")
-            }
         }
         .background {
             GeometryReader { geo in
@@ -124,8 +114,17 @@ struct ReaderView: View {
                 pageIndex: $curlIndex,
                 background: bg,
                 margin: viewModel.settings.pageMargin,
+                bookTitle: viewModel.book.title,
+                chapterTitle: viewModel.currentChapter?.title ?? "",
+                showHeader: viewModel.settings.showHeader,
+                showPageNumber: viewModel.settings.showPageNumber,
                 onIndexChange: { idx in
                     viewModel.goToPage(idx)
+                },
+                onSelection: handleSelection,
+                onTap: { fraction in
+                    guard fraction >= 0.28, fraction <= 0.72 else { return }
+                    viewModel.toggleChrome()
                 }
             )
             .onChange(of: viewModel.pageIndex) { _, new in
@@ -148,7 +147,13 @@ struct ReaderView: View {
                     page: page,
                     background: bg,
                     margin: viewModel.settings.pageMargin,
-                    pageLabel: "\(idx + 1) / \(viewModel.pages.count)"
+                    bookTitle: viewModel.book.title,
+                    chapterTitle: viewModel.currentChapter?.title ?? "",
+                    pageLabel: "\(idx + 1) / \(viewModel.pages.count)",
+                    showHeader: viewModel.settings.showHeader,
+                    showPageNumber: viewModel.settings.showPageNumber,
+                    onSelection: handleSelection,
+                    onTap: handlePageTap
                 )
                 .tag(idx)
             }
@@ -157,62 +162,79 @@ struct ReaderView: View {
     }
 
     private var verticalScroller: some View {
-        ScrollView {
+        ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 0) {
                 ForEach(Array(viewModel.pages.enumerated()), id: \.element.id) { idx, page in
                     PageContent(
                         page: page,
                         background: bg,
                         margin: viewModel.settings.pageMargin,
-                        pageLabel: "\(idx + 1) / \(viewModel.pages.count)"
+                        bookTitle: viewModel.book.title,
+                        chapterTitle: viewModel.currentChapter?.title ?? "",
+                        pageLabel: "\(idx + 1) / \(viewModel.pages.count)",
+                        showHeader: viewModel.settings.showHeader,
+                        showPageNumber: viewModel.settings.showPageNumber,
+                        onSelection: handleSelection,
+                        onTap: handlePageTap
                     )
-                    .frame(minHeight: max(viewModel.pageSize.height, 200))
+                    .frame(height: max(viewModel.pageSize.height, 200))
                     .id(idx)
-                    .onAppear {
-                        if abs(idx - viewModel.pageIndex) > 0 {
-                            // 粗略同步进度
-                        }
-                    }
                 }
             }
+            .scrollTargetLayout()
         }
         .scrollIndicators(.hidden)
-    }
-
-    // MARK: - Tap zones
-
-    private var tapZones: some View {
-        GeometryReader { geo in
-            if viewModel.settings.pageTurnMode == .pageCurl {
-                // 仿真翻页：仅中间区域点出菜单，左右交给 UIPageViewController
-                HStack(spacing: 0) {
-                    Color.clear.frame(width: geo.size.width * 0.28)
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture { viewModel.toggleChrome() }
-                        .frame(width: geo.size.width * 0.44)
-                    Color.clear.frame(width: geo.size.width * 0.28)
-                }
-            } else {
-                HStack(spacing: 0) {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture { viewModel.previousPage() }
-                        .frame(width: geo.size.width * 0.28)
-
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture { viewModel.toggleChrome() }
-                        .frame(width: geo.size.width * 0.44)
-
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .onTapGesture { viewModel.nextPage() }
-                        .frame(width: geo.size.width * 0.28)
-                }
+        .scrollTargetBehavior(.paging)
+        .scrollPosition(id: $verticalPageID)
+        .onAppear { verticalPageID = viewModel.pageIndex }
+        .onChange(of: verticalPageID) { _, newValue in
+            if let newValue, newValue != viewModel.pageIndex {
+                viewModel.goToPage(newValue)
             }
         }
-        .opacity(0.01)
+        .onChange(of: viewModel.pageIndex) { _, newValue in
+            if verticalPageID != newValue {
+                verticalPageID = newValue
+            }
+        }
+    }
+
+    // MARK: - Reading interactions
+
+    private func handleSelection(_ text: String, _ offset: Int) {
+        viewModel.updateRewriteSelection(text: text, utf16Offset: offset)
+    }
+
+    private func handlePageTap(_ fraction: CGFloat) {
+        if fraction < 0.28 {
+            viewModel.previousPage()
+        } else if fraction > 0.72 {
+            viewModel.nextPage()
+        } else {
+            viewModel.toggleChrome()
+        }
+    }
+
+    private var rewriteSelectionAction: some View {
+        VStack {
+            Spacer()
+            HStack {
+                Spacer()
+                Button {
+                    viewModel.beginRewriteForSelection()
+                } label: {
+                    Label(String(localized: "AI 改写"), systemImage: "sparkles")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .frame(height: 44)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.accentColor)
+            }
+            .padding(.horizontal, 16)
+            .padding(.bottom, viewModel.chromeVisible || viewModel.showTTSBar ? 132 : 20)
+        }
+        .transition(.move(edge: .bottom).combined(with: .opacity))
     }
 
     // MARK: - Chrome
@@ -290,24 +312,12 @@ struct ReaderView: View {
                 .accessibilityLabel(String(localized: "阅读设置"))
 
                 Button {
-                    viewModel.showAIRewrite = true
+                    viewModel.showAIHistory = true
                 } label: {
-                    Image(systemName: "sparkles")
+                    Image(systemName: "clock.arrow.circlepath")
                         .frame(width: 44, height: 44)
                 }
-                .accessibilityLabel(String(localized: "AI 改写"))
-                .contextMenu {
-                    Button {
-                        viewModel.showAIRewrite = true
-                    } label: {
-                        Label(String(localized: "AI 改写本页"), systemImage: "sparkles")
-                    }
-                    Button {
-                        viewModel.showAIHistory = true
-                    } label: {
-                        Label(String(localized: "改写历史 / 撤销"), systemImage: "clock.arrow.circlepath")
-                    }
-                }
+                .accessibilityLabel(String(localized: "改写历史"))
 
                 Button {
                     viewModel.startTTSFromCurrentPage()

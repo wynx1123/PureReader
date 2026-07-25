@@ -37,7 +37,7 @@ struct TTSControlBar: View {
             Button {
                 viewModel.stopTTS()
             } label: {
-                Image(systemName: "xmark.circle.fill")
+                Image(systemName: "stop.circle.fill")
                     .font(.title3)
                     .frame(width: 44, height: 44)
             }

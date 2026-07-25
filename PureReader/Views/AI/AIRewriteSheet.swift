@@ -83,19 +83,17 @@ struct AIRewriteSheet: View {
             }
 
             Section {
-                Text(String(localized: "📋 选择要改写的原文范围"))
+                Text(String(localized: "已选择的原文"))
                     .font(.headline)
-                TextEditor(text: $selectedText)
-                    .font(.body)
-                    .frame(minHeight: 160)
-                    .accessibilityLabel(String(localized: "改写原文"))
-                Button(String(localized: "使用整页文本")) {
-                    selectedText = pageText
+                ScrollView {
+                    Text(selectedText)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                        .padding(.vertical, 4)
                 }
-                .font(.caption)
-                Text(String(localized: "可删除前后文字来缩小范围；请保留原文字词，以便准确替换。"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.body)
+                    .frame(minHeight: 120, maxHeight: 220)
+                    .accessibilityLabel(String(localized: "已选择的改写原文"))
             }
 
             Section(String(localized: "改写风格")) {
@@ -117,24 +115,6 @@ struct AIRewriteSheet: View {
             }
 
             Section {
-                Button {
-                    // 整页分段：取前若干自然段作为批量改写入口
-                    selectedText = pageText
-                    Task { await runRewrite() }
-                } label: {
-                    HStack {
-                        Spacer()
-                        Text(String(localized: "批量：改写整页"))
-                        Spacer()
-                    }
-                }
-                .disabled(
-                    pageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || userRequest.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                        || !AIConfig.isConfigured
-                        || isWorking
-                )
-
                 Button {
                     Task { await runRewrite() }
                 } label: {

@@ -140,6 +140,8 @@ final class ReadingSettings {
     var pageMarginRaw: String
     var backgroundColorRaw: String
     var pageTurnModeRaw: String
+    var showHeader: Bool = true
+    var showPageNumber: Bool = true
     var ttsRate: Double
     var ttsVoice: String
 
@@ -164,6 +166,8 @@ final class ReadingSettings {
         pageMargin: MarginMode = .normal,
         backgroundColor: BackgroundType = .cream,
         pageTurnMode: PageTurnMode = .scroll,
+        showHeader: Bool = true,
+        showPageNumber: Bool = true,
         ttsRate: Double = 0.5,
         ttsVoice: String = ""
     ) {
@@ -172,6 +176,8 @@ final class ReadingSettings {
         self.pageMarginRaw = pageMargin.rawValue
         self.backgroundColorRaw = backgroundColor.rawValue
         self.pageTurnModeRaw = pageTurnMode.rawValue
+        self.showHeader = showHeader
+        self.showPageNumber = showPageNumber
         self.ttsRate = ttsRate
         self.ttsVoice = ttsVoice
     }

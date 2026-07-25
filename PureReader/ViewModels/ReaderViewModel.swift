@@ -27,6 +27,8 @@ final class ReaderViewModel {
     var showTTSBar = false
     var showAIRewrite = false
     var showAIHistory = false
+    private(set) var selectedRewriteText = ""
+    private(set) var selectedRewriteOffset: Int?
     var isTTSSpeaking = false
     var isTTSPaused = false
 
@@ -37,6 +39,7 @@ final class ReaderViewModel {
     private var paginateTask: Task<Void, Never>?
     private var saveTask: Task<Void, Never>?
     private var understandingRefreshTask: Task<Void, Never>?
+    private var ttsContinuationTask: Task<Void, Never>?
 
     init(book: Book, context: ModelContext) {
         self.book = book
@@ -83,6 +86,7 @@ final class ReaderViewModel {
     func onDisappear() {
         paginateTask?.cancel()
         understandingRefreshTask?.cancel()
+        ttsContinuationTask?.cancel()
         tts.stop()
         timer.stop()
         persistProgress(immediate: true)
@@ -132,7 +136,9 @@ final class ReaderViewModel {
             lineSpacing: settings.lineSpacing,
             margin: settings.pageMargin,
             contentSize: size,
-            isDark: settings.backgroundColor == .dark
+            isDark: settings.backgroundColor == .dark,
+            showHeader: settings.showHeader,
+            showPageNumber: settings.showPageNumber
         )
         let offsetToRestore = restoreOffset ?? currentPage?.location ?? book.currentPageOffset
 
@@ -175,6 +181,9 @@ final class ReaderViewModel {
 
     func goToPage(_ index: Int) {
         guard pages.indices.contains(index) else { return }
+        if index != pageIndex {
+            clearRewriteSelection()
+        }
         pageIndex = index
         persistProgress(immediate: false)
     }
@@ -197,6 +206,7 @@ final class ReaderViewModel {
 
     func goToChapter(_ index: Int) {
         guard chapters.indices.contains(index) else { return }
+        clearRewriteSelection()
         chapterIndex = index
         book.currentChapterIndex = index
         book.currentPageOffset = 0
@@ -258,6 +268,18 @@ final class ReaderViewModel {
         saveSettings()
     }
 
+    func setShowHeader(_ isVisible: Bool) {
+        settings.showHeader = isVisible
+        saveSettings()
+        repaginate()
+    }
+
+    func setShowPageNumber(_ isVisible: Bool) {
+        settings.showPageNumber = isVisible
+        saveSettings()
+        repaginate()
+    }
+
     func setTTSRate(_ value: Double) {
         settings.ttsRate = min(2.0, max(0.5, value))
         tts.configure(rate: settings.ttsRate, voiceIdentifier: settings.ttsVoice.isEmpty ? nil : settings.ttsVoice)
@@ -288,6 +310,7 @@ final class ReaderViewModel {
 
     func startTTSFromCurrentPage() {
         guard let chapter = currentChapter else { return }
+        ttsContinuationTask?.cancel()
         showTTSBar = true
         let offset = currentPage?.location ?? 0
         tts.configure(rate: settings.ttsRate, voiceIdentifier: settings.ttsVoice.isEmpty ? nil : settings.ttsVoice)
@@ -306,6 +329,8 @@ final class ReaderViewModel {
     }
 
     func stopTTS() {
+        ttsContinuationTask?.cancel()
+        ttsContinuationTask = nil
         tts.stop()
         syncTTSFlags()
         showTTSBar = false
@@ -327,9 +352,11 @@ final class ReaderViewModel {
         if chapterIndex + 1 < chapters.count {
             goToChapter(chapterIndex + 1)
             // 等分页完成后自动继续
-            Task { @MainActor in
+            ttsContinuationTask?.cancel()
+            ttsContinuationTask = Task { @MainActor [weak self] in
                 try? await Task.sleep(nanoseconds: 400_000_000)
-                startTTSFromCurrentPage()
+                guard let self, !Task.isCancelled, self.showTTSBar else { return }
+                self.startTTSFromCurrentPage()
             }
         } else {
             showTTSBar = false
@@ -338,6 +365,25 @@ final class ReaderViewModel {
 
 
     // MARK: - AI Rewrite
+
+    func updateRewriteSelection(text: String, utf16Offset: Int?) {
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            clearRewriteSelection()
+            return
+        }
+        selectedRewriteText = text
+        selectedRewriteOffset = utf16Offset
+    }
+
+    func beginRewriteForSelection() {
+        guard !selectedRewriteText.isEmpty, selectedRewriteOffset != nil else { return }
+        showAIRewrite = true
+    }
+
+    func clearRewriteSelection() {
+        selectedRewriteText = ""
+        selectedRewriteOffset = nil
+    }
 
     func applyRewrite(_ application: RewriteApplication) throws {
         guard let chapter = currentChapter else {

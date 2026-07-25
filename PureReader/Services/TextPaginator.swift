@@ -30,19 +30,25 @@ enum TextPaginator {
         var margin: MarginMode
         var contentSize: CGSize
         var isDark: Bool
+        var showHeader: Bool
+        var showPageNumber: Bool
 
         init(
             fontSize: Double,
             lineSpacing: Double,
             margin: MarginMode,
             contentSize: CGSize,
-            isDark: Bool
+            isDark: Bool,
+            showHeader: Bool,
+            showPageNumber: Bool
         ) {
             self.fontSize = CGFloat(fontSize)
             self.lineSpacing = CGFloat(lineSpacing)
             self.margin = margin
             self.contentSize = contentSize
             self.isDark = isDark
+            self.showHeader = showHeader
+            self.showPageNumber = showPageNumber
         }
     }
 
@@ -59,7 +65,9 @@ enum TextPaginator {
         _ = chapterID
         let inset = layout.margin.edgeInset
         let pageWidth = max(1, layout.contentSize.width - inset * 2)
-        let pageHeight = max(1, layout.contentSize.height - inset * 2)
+        let decorationHeight = (layout.showHeader ? ReaderLayoutMetrics.headerHeight : 0)
+            + (layout.showPageNumber ? ReaderLayoutMetrics.footerHeight : 0)
+        let pageHeight = max(1, layout.contentSize.height - inset * 2 - decorationHeight)
         let pageRect = CGRect(x: 0, y: 0, width: pageWidth, height: pageHeight)
 
         guard !text.isEmpty else {
@@ -141,4 +149,9 @@ enum TextPaginator {
         ]
         return NSAttributedString(string: text, attributes: attrs)
     }
+}
+
+enum ReaderLayoutMetrics {
+    static let headerHeight: CGFloat = 24
+    static let footerHeight: CGFloat = 24
 }

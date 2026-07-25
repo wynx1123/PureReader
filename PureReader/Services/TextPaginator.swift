@@ -151,6 +151,18 @@ enum TextPaginator {
     }
 }
 
+struct BookPageID: Hashable, Sendable {
+    let chapterIndex: Int
+    let pageIndex: Int
+}
+
+struct BookReaderPage: Identifiable, Hashable {
+    let id: BookPageID
+    let chapterTitle: String
+    let page: ReaderPage
+    let chapterPageCount: Int
+}
+
 enum ReaderLayoutMetrics {
     static let headerHeight: CGFloat = 24
     static let footerHeight: CGFloat = 24

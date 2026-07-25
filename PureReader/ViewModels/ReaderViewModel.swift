@@ -16,6 +16,7 @@ final class ReaderViewModel {
     private(set) var chapters: [Chapter] = []
     private(set) var chapterIndex: Int = 0
     private(set) var pages: [ReaderPage] = []
+    private(set) var verticalPages: [BookReaderPage] = []
     private(set) var pageIndex: Int = 0
     private(set) var isPaginating = false
     private(set) var pageSize: CGSize = .zero
@@ -73,6 +74,11 @@ final class ReaderViewModel {
     var currentPage: ReaderPage? {
         guard pages.indices.contains(pageIndex) else { return nil }
         return pages[pageIndex]
+    }
+
+    var currentVerticalPageID: BookPageID? {
+        guard settings.pageTurnMode == .verticalScroll else { return nil }
+        return BookPageID(chapterIndex: chapterIndex, pageIndex: pageIndex)
     }
 
     var progressText: String {
@@ -149,6 +155,56 @@ final class ReaderViewModel {
         )
         let offsetToRestore = restoreOffset ?? currentPage?.location ?? book.currentPageOffset
 
+        if settings.pageTurnMode == .verticalScroll {
+            let snapshots = chapters.enumerated().map { index, chapter in
+                (index: index, title: chapter.title, id: chapter.id.uuidString, text: chapter.content)
+            }
+            let targetChapterIndex = chapterIndex
+            pages = []
+            verticalPages = []
+
+            paginateTask = Task.detached(priority: .userInitiated) {
+                var bookPages: [BookReaderPage] = []
+                for snapshot in snapshots {
+                    guard !Task.isCancelled else { return }
+                    let chapterPages = TextPaginator.paginate(
+                        chapterID: snapshot.id,
+                        text: snapshot.text,
+                        layout: layout
+                    )
+                    bookPages.append(contentsOf: chapterPages.map { page in
+                        BookReaderPage(
+                            id: BookPageID(
+                                chapterIndex: snapshot.index,
+                                pageIndex: page.id
+                            ),
+                            chapterTitle: snapshot.title,
+                            page: page,
+                            chapterPageCount: chapterPages.count
+                        )
+                    })
+                }
+
+                await MainActor.run { [weak self] in
+                    guard let self, !Task.isCancelled else { return }
+                    self.verticalPages = bookPages
+                    let chapterPages = bookPages
+                        .filter { $0.id.chapterIndex == targetChapterIndex }
+                        .map(\.page)
+                    self.pages = chapterPages
+                    self.pageIndex = TextPaginator.pageIndex(
+                        forCharacterOffset: offsetToRestore,
+                        in: chapterPages
+                    )
+                    self.isPaginating = false
+                    self.persistProgress(immediate: false)
+                }
+            }
+            return
+        }
+
+        verticalPages = []
+
         paginateTask = Task.detached(priority: .userInitiated) {
             let result = TextPaginator.paginate(
                 chapterID: chapterID,
@@ -195,6 +251,23 @@ final class ReaderViewModel {
         persistProgress(immediate: false)
     }
 
+    func goToVerticalPage(_ id: BookPageID) {
+        guard settings.pageTurnMode == .verticalScroll,
+              let target = verticalPages.first(where: { $0.id == id }) else { return }
+
+        if id.chapterIndex != chapterIndex {
+            clearRewriteSelection()
+            chapterIndex = id.chapterIndex
+            book.currentChapterIndex = id.chapterIndex
+            pages = verticalPages
+                .filter { $0.id.chapterIndex == id.chapterIndex }
+                .map(\.page)
+        }
+        pageIndex = id.pageIndex
+        book.currentPageOffset = target.page.location
+        persistProgress(immediate: false)
+    }
+
     func nextPage() {
         if pageIndex + 1 < pages.count {
             goToPage(pageIndex + 1)
@@ -218,6 +291,16 @@ final class ReaderViewModel {
         book.currentChapterIndex = index
         book.currentPageOffset = 0
         pageIndex = 0
+        if settings.pageTurnMode == .verticalScroll,
+           verticalPages.contains(where: { $0.id.chapterIndex == index }) {
+            pages = verticalPages
+                .filter { $0.id.chapterIndex == index }
+                .map(\.page)
+            persistProgress(immediate: false)
+            showChapterList = false
+            return
+        }
+        pages = []
         repaginate(restoreOffset: 0)
         showChapterList = false
     }
@@ -229,11 +312,26 @@ final class ReaderViewModel {
 
     func previousChapter(atEnd: Bool = false) {
         guard chapterIndex > 0 else { return }
-        chapterIndex -= 1
-        book.currentChapterIndex = chapterIndex
+        let targetChapterIndex = chapterIndex - 1
         // Int.max/4 让 pageIndex 落在最后一页
         let restore = atEnd ? (Int.max / 4) : 0
+        if settings.pageTurnMode == .verticalScroll,
+           let target = verticalPages.last(where: { $0.id.chapterIndex == targetChapterIndex }) {
+            clearRewriteSelection()
+            chapterIndex = targetChapterIndex
+            book.currentChapterIndex = targetChapterIndex
+            pages = verticalPages
+                .filter { $0.id.chapterIndex == targetChapterIndex }
+                .map(\.page)
+            pageIndex = atEnd ? target.id.pageIndex : 0
+            book.currentPageOffset = atEnd ? target.page.location : 0
+            persistProgress(immediate: false)
+            return
+        }
+        chapterIndex = targetChapterIndex
+        book.currentChapterIndex = targetChapterIndex
         book.currentPageOffset = restore
+        pages = []
         repaginate(restoreOffset: restore)
     }
 
@@ -271,8 +369,11 @@ final class ReaderViewModel {
     }
 
     func setPageTurnMode(_ mode: PageTurnMode) {
+        guard settings.pageTurnMode != mode else { return }
+        let offset = currentPage?.location ?? book.currentPageOffset
         settings.pageTurnMode = mode
         saveSettings()
+        repaginate(restoreOffset: offset)
     }
 
     func setShowHeader(_ isVisible: Bool) {
@@ -305,7 +406,7 @@ final class ReaderViewModel {
             stopTTS()
         }
         settings.ttsProvider = provider
-        settings.ttsVoice = provider.defaultVoice
+        settings.ttsVoice = NetworkTTSConfig.defaultVoice(for: provider)
         configureTTS()
         saveSettings()
     }

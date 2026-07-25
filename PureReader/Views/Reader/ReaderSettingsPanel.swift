@@ -133,15 +133,40 @@ struct ReaderSettingsPanel: View {
                             .frame(width: 40, alignment: .trailing)
                     }
 
-                    Picker(String(localized: "音色"), selection: Binding(
-                        get: { viewModel.settings.ttsVoice },
-                        set: { viewModel.setTTSVoice($0) }
-                    )) {
-                        if viewModel.settings.ttsProvider == .system {
-                            Text(String(localized: "系统默认")).tag("")
-                        }
-                        ForEach(viewModel.availableTTSVoices) { voice in
-                            Text(voice.name).tag(voice.id)
+                    if viewModel.settings.ttsProvider != .system {
+                        TextField(String(localized: "模型"), text: Binding(
+                            get: {
+                                NetworkTTSConfig.model(for: viewModel.settings.ttsProvider)
+                            },
+                            set: {
+                                NetworkTTSConfig.setModel(
+                                    $0,
+                                    for: viewModel.settings.ttsProvider
+                                )
+                            }
+                        ))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    }
+
+                    if viewModel.settings.ttsProvider == .fishAudio {
+                        TextField(String(localized: "音色模型 ID（可选）"), text: Binding(
+                            get: { viewModel.settings.ttsVoice },
+                            set: { viewModel.setTTSVoice($0) }
+                        ))
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                    } else {
+                        Picker(String(localized: "音色"), selection: Binding(
+                            get: { viewModel.settings.ttsVoice },
+                            set: { viewModel.setTTSVoice($0) }
+                        )) {
+                            if viewModel.settings.ttsProvider == .system {
+                                Text(String(localized: "系统默认")).tag("")
+                            }
+                            ForEach(viewModel.availableTTSVoices) { voice in
+                                Text(voice.name).tag(voice.id)
+                            }
                         }
                     }
 

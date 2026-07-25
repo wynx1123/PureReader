@@ -11,7 +11,11 @@ struct PageCurlView: UIViewControllerRepresentable {
     let chapterTitle: String
     let showHeader: Bool
     let showPageNumber: Bool
+    let canGoToPreviousChapter: Bool
+    let canGoToNextChapter: Bool
     var onIndexChange: (Int) -> Void
+    var onPreviousChapter: () -> Void
+    var onNextChapter: () -> Void
     var onSelection: (String, Int) -> Void
     var onTap: (CGFloat) -> Void
 
@@ -37,16 +41,17 @@ struct PageCurlView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ pvc: UIPageViewController, context: Context) {
         context.coordinator.parent = self
+        let target = context.coordinator.controller(for: pageIndex)
         // 外部 pageIndex 变化时同步
         if let current = pvc.viewControllers?.first as? PageHostController,
            current.index != pageIndex,
-           let vc = context.coordinator.controller(for: pageIndex) {
+           let target {
             let direction: UIPageViewController.NavigationDirection =
                 pageIndex >= current.index ? .forward : .reverse
-            pvc.setViewControllers([vc], direction: direction, animated: true)
+            pvc.setViewControllers([target], direction: direction, animated: true)
         } else if pvc.viewControllers?.isEmpty != false,
-                  let vc = context.coordinator.controller(for: pageIndex) {
-            pvc.setViewControllers([vc], direction: .forward, animated: false)
+                  let target {
+            pvc.setViewControllers([target], direction: .forward, animated: false)
         }
     }
 
@@ -59,6 +64,28 @@ struct PageCurlView: UIViewControllerRepresentable {
         }
 
         func controller(for index: Int) -> PageHostController? {
+            if index == -1, parent.canGoToPreviousChapter {
+                let vc = cache[index] ?? PageHostController()
+                vc.index = index
+                vc.applyBoundary(
+                    title: String(localized: "上一章"),
+                    background: parent.background,
+                    systemImage: "chevron.left.2"
+                )
+                cache[index] = vc
+                return vc
+            }
+            if index == parent.pages.count, parent.canGoToNextChapter {
+                let vc = cache[index] ?? PageHostController()
+                vc.index = index
+                vc.applyBoundary(
+                    title: String(localized: "下一章"),
+                    background: parent.background,
+                    systemImage: "chevron.right.2"
+                )
+                cache[index] = vc
+                return vc
+            }
             guard parent.pages.indices.contains(index) else { return nil }
             if let hit = cache[index] {
                 hit.apply(
@@ -124,6 +151,14 @@ struct PageCurlView: UIViewControllerRepresentable {
             guard completed,
                   let host = pageViewController.viewControllers?.first as? PageHostController
             else { return }
+            if host.index < 0 {
+                parent.onPreviousChapter()
+                return
+            }
+            if host.index >= parent.pages.count {
+                parent.onNextChapter()
+                return
+            }
             parent.pageIndex = host.index
             parent.onIndexChange(host.index)
         }
@@ -224,6 +259,41 @@ final class PageHostController: UIViewController, UITextViewDelegate, UIGestureR
         footerHeightConstraint?.constant = showPageNumber ? ReaderLayoutMetrics.footerHeight : 0
         selectionHandler = onSelection
         tapHandler = onTap
+    }
+
+    func applyBoundary(
+        title: String,
+        background: BackgroundType,
+        systemImage: String
+    ) {
+        if !isViewLoaded { loadViewIfNeeded() }
+        let color = UIColor(Color.readerSecondary(background))
+        let attachment = NSTextAttachment()
+        attachment.image = UIImage(systemName: systemImage)?.withTintColor(color)
+        let content = NSMutableAttributedString(attachment: attachment)
+        content.append(NSAttributedString(string: "\n\n\(title)"))
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        content.addAttributes(
+            [
+                .font: UIFont.preferredFont(forTextStyle: .headline),
+                .foregroundColor: color,
+                .paragraphStyle: paragraph
+            ],
+            range: NSRange(location: 0, length: content.length)
+        )
+
+        view.backgroundColor = UIColor(Color.readerBackground(background))
+        textView.attributedText = content
+        textView.textContainerInset = UIEdgeInsets(top: 120, left: 24, bottom: 0, right: 24)
+        topConstraint?.constant = 0
+        bottomConstraint?.constant = 0
+        headerLabel.isHidden = true
+        pageLabel.isHidden = true
+        headerHeightConstraint?.constant = 0
+        footerHeightConstraint?.constant = 0
+        selectionHandler = nil
+        tapHandler = nil
     }
 
     func textViewDidChangeSelection(_ textView: UITextView) {

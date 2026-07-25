@@ -72,6 +72,7 @@ enum TTSProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     case system
     case openAICompatible
     case xiaomiMiMo
+    case fishAudio
 
     var id: String { rawValue }
 
@@ -80,6 +81,7 @@ enum TTSProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .system: return String(localized: "系统语音")
         case .openAICompatible: return String(localized: "OpenAI 兼容")
         case .xiaomiMiMo: return String(localized: "小米 MiMo")
+        case .fishAudio: return "Fish Audio"
         }
     }
 
@@ -88,6 +90,7 @@ enum TTSProvider: String, Codable, CaseIterable, Identifiable, Sendable {
         case .system: return ""
         case .openAICompatible: return "marin"
         case .xiaomiMiMo: return "mimo_default"
+        case .fishAudio: return ""
         }
     }
 }

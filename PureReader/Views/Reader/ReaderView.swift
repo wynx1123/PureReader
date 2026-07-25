@@ -8,7 +8,7 @@ struct ReaderView: View {
 
     @State private var viewModel: ReaderViewModel
     @State private var curlIndex: Int = 0
-    @State private var verticalPageID: Int?
+    @State private var verticalPageID: BookPageID?
 
     init(book: Book, context: ModelContext) {
         _viewModel = State(initialValue: ReaderViewModel(book: book, context: context))
@@ -126,8 +126,16 @@ struct ReaderView: View {
                 chapterTitle: viewModel.currentChapter?.title ?? "",
                 showHeader: viewModel.settings.showHeader,
                 showPageNumber: viewModel.settings.showPageNumber,
+                canGoToPreviousChapter: viewModel.chapterIndex > 0,
+                canGoToNextChapter: viewModel.chapterIndex + 1 < viewModel.chapters.count,
                 onIndexChange: { idx in
                     viewModel.goToPage(idx)
+                },
+                onPreviousChapter: {
+                    viewModel.previousChapter(atEnd: true)
+                },
+                onNextChapter: {
+                    viewModel.nextChapter()
                 },
                 onSelection: handleSelection,
                 onTap: { fraction in
@@ -148,8 +156,24 @@ struct ReaderView: View {
     private var horizontalPager: some View {
         TabView(selection: Binding(
             get: { viewModel.pageIndex },
-            set: { viewModel.goToPage($0) }
+            set: { newValue in
+                if newValue < 0 {
+                    viewModel.previousChapter(atEnd: true)
+                } else if newValue >= viewModel.pages.count {
+                    viewModel.nextChapter()
+                } else {
+                    viewModel.goToPage(newValue)
+                }
+            }
         )) {
+            if viewModel.chapterIndex > 0 {
+                chapterBoundaryPage(
+                    title: viewModel.chapters[viewModel.chapterIndex - 1].title,
+                    systemImage: "chevron.left.2"
+                )
+                .tag(-1)
+            }
+
             ForEach(Array(viewModel.pages.enumerated()), id: \.element.id) { idx, page in
                 PageContent(
                     page: page,
@@ -165,46 +189,78 @@ struct ReaderView: View {
                 )
                 .tag(idx)
             }
+
+            if viewModel.chapterIndex + 1 < viewModel.chapters.count {
+                chapterBoundaryPage(
+                    title: viewModel.chapters[viewModel.chapterIndex + 1].title,
+                    systemImage: "chevron.right.2"
+                )
+                .tag(viewModel.pages.count)
+            }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
+        .id(viewModel.currentChapter?.id)
     }
 
     private var verticalScroller: some View {
         ScrollView(.vertical) {
             LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(Array(viewModel.pages.enumerated()), id: \.element.id) { idx, page in
+                ForEach(viewModel.verticalPages) { item in
                     PageContent(
-                        page: page,
+                        page: item.page,
                         background: bg,
                         margin: viewModel.settings.pageMargin,
                         bookTitle: viewModel.book.title,
-                        chapterTitle: viewModel.currentChapter?.title ?? "",
-                        pageLabel: "\(idx + 1) / \(viewModel.pages.count)",
+                        chapterTitle: item.chapterTitle,
+                        pageLabel: "\(item.id.pageIndex + 1) / \(item.chapterPageCount)",
                         showHeader: viewModel.settings.showHeader,
                         showPageNumber: viewModel.settings.showPageNumber,
-                        onSelection: handleSelection,
-                        onTap: handlePageTap
+                        onSelection: { text, offset in
+                            viewModel.goToVerticalPage(item.id)
+                            handleSelection(text, offset)
+                        },
+                        onTap: { fraction in
+                            viewModel.goToVerticalPage(item.id)
+                            handlePageTap(fraction)
+                        }
                     )
                     .frame(height: max(viewModel.pageSize.height, 200))
-                    .id(idx)
+                    .id(item.id)
                 }
             }
             .scrollTargetLayout()
         }
         .scrollIndicators(.hidden)
-        .scrollTargetBehavior(.paging)
         .scrollPosition(id: $verticalPageID)
-        .onAppear { verticalPageID = viewModel.pageIndex }
+        .onAppear { verticalPageID = viewModel.currentVerticalPageID }
         .onChange(of: verticalPageID) { _, newValue in
-            if let newValue, newValue != viewModel.pageIndex {
-                viewModel.goToPage(newValue)
+            if let newValue, newValue != viewModel.currentVerticalPageID {
+                viewModel.goToVerticalPage(newValue)
             }
         }
-        .onChange(of: viewModel.pageIndex) { _, newValue in
+        .onChange(of: viewModel.currentVerticalPageID) { _, newValue in
             if verticalPageID != newValue {
                 verticalPageID = newValue
             }
         }
+        .onChange(of: viewModel.verticalPages) { _, newValue in
+            guard !newValue.isEmpty else { return }
+            verticalPageID = viewModel.currentVerticalPageID
+        }
+    }
+
+    private func chapterBoundaryPage(title: String, systemImage: String) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .font(.title2)
+            Text(title)
+                .font(.headline)
+                .lineLimit(2)
+                .multilineTextAlignment(.center)
+        }
+        .foregroundStyle(Color.readerSecondary(bg))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(viewModel.settings.pageMargin.edgeInset)
     }
 
     // MARK: - Reading interactions

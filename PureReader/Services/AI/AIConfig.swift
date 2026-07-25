@@ -146,6 +146,10 @@ enum NetworkTTSConfig {
         static let miMoBaseURL = "tts.miMo.baseURL"
         static let miMoAPIKey = "tts.miMo.apiKey"
         static let miMoModel = "tts.miMo.model"
+        static let fishBaseURL = "tts.fish.baseURL"
+        static let fishAPIKey = "tts.fish.apiKey"
+        static let fishModel = "tts.fish.model"
+        static let fishReferenceID = "tts.fish.referenceID"
     }
 
     static var openAIBaseURL: String {
@@ -178,6 +182,32 @@ enum NetworkTTSConfig {
         set { defaults.set(clean(newValue), forKey: Key.miMoModel) }
     }
 
+    static var fishBaseURL: String {
+        get { value(for: Key.fishBaseURL, fallback: "https://api.fish.audio/v1") }
+        set { defaults.set(clean(newValue), forKey: Key.fishBaseURL) }
+    }
+
+    static var fishAPIKey: String {
+        get { keychainValue(for: Key.fishAPIKey) }
+        set { setKeychainValue(newValue, for: Key.fishAPIKey) }
+    }
+
+    static var fishModel: String {
+        get { value(for: Key.fishModel, fallback: "s2.1-pro-free") }
+        set { defaults.set(clean(newValue), forKey: Key.fishModel) }
+    }
+
+    static var fishReferenceID: String {
+        get {
+            (defaults.string(forKey: Key.fishReferenceID) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        set { defaults.set(
+            newValue.trimmingCharacters(in: .whitespacesAndNewlines),
+            forKey: Key.fishReferenceID
+        ) }
+    }
+
     static func isConfigured(for provider: TTSProvider) -> Bool {
         switch provider {
         case .system:
@@ -186,6 +216,8 @@ enum NetworkTTSConfig {
             return !openAIAPIKey.isEmpty && resolvedBaseURL(for: provider) != nil
         case .xiaomiMiMo:
             return !miMoAPIKey.isEmpty && resolvedBaseURL(for: provider) != nil
+        case .fishAudio:
+            return !fishAPIKey.isEmpty && resolvedBaseURL(for: provider) != nil
         }
     }
 
@@ -195,6 +227,7 @@ enum NetworkTTSConfig {
         case .system: return nil
         case .openAICompatible: raw = openAIBaseURL
         case .xiaomiMiMo: raw = miMoBaseURL
+        case .fishAudio: raw = fishBaseURL
         }
         guard let url = URL(string: clean(raw)),
               let scheme = url.scheme?.lowercased(),
@@ -209,6 +242,7 @@ enum NetworkTTSConfig {
         case .system: return ""
         case .openAICompatible: return openAIAPIKey
         case .xiaomiMiMo: return miMoAPIKey
+        case .fishAudio: return fishAPIKey
         }
     }
 
@@ -217,6 +251,23 @@ enum NetworkTTSConfig {
         case .system: return ""
         case .openAICompatible: return openAIModel
         case .xiaomiMiMo: return miMoModel
+        case .fishAudio: return fishModel
+        }
+    }
+
+    static func setModel(_ model: String, for provider: TTSProvider) {
+        switch provider {
+        case .system: break
+        case .openAICompatible: openAIModel = model
+        case .xiaomiMiMo: miMoModel = model
+        case .fishAudio: fishModel = model
+        }
+    }
+
+    static func defaultVoice(for provider: TTSProvider) -> String {
+        switch provider {
+        case .fishAudio: return fishReferenceID
+        default: return provider.defaultVoice
         }
     }
 

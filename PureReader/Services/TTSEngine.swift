@@ -79,7 +79,7 @@ final class TTSEngine: NSObject, ObservableObject {
         switch provider {
         case .system:
             speakWithSystem(remaining)
-        case .openAICompatible, .xiaomiMiMo:
+        case .openAICompatible, .xiaomiMiMo, .fishAudio:
             networkChunks = Self.makeChunks(from: remaining)
             networkChunkIndex = 0
             playCurrentNetworkChunk(session: sessionID)
@@ -91,7 +91,7 @@ final class TTSEngine: NSObject, ObservableObject {
         switch provider {
         case .system:
             synthesizer.pauseSpeaking(at: .word)
-        case .openAICompatible, .xiaomiMiMo:
+        case .openAICompatible, .xiaomiMiMo, .fishAudio:
             audioPlayer?.pause()
         }
         isPaused = true
@@ -103,7 +103,7 @@ final class TTSEngine: NSObject, ObservableObject {
         switch provider {
         case .system:
             synthesizer.continueSpeaking()
-        case .openAICompatible, .xiaomiMiMo:
+        case .openAICompatible, .xiaomiMiMo, .fishAudio:
             audioPlayer?.play()
         }
         isPaused = false
@@ -162,7 +162,17 @@ final class TTSEngine: NSObject, ObservableObject {
                 .init(id: "Milo", name: "Milo"),
                 .init(id: "Dean", name: "Dean")
             ]
+        case .fishAudio:
+            return []
         }
+    }
+
+    static func previewAudio(
+        provider: TTSProvider,
+        voice: String,
+        text: String = "你好，欢迎使用纯享阅读。"
+    ) async throws -> Data {
+        try await requestAudio(text: text, provider: provider, voice: voice)
     }
 
     // MARK: - System speech
@@ -284,6 +294,14 @@ final class TTSEngine: NSObject, ObservableObject {
                 voice: voice,
                 text: text
             )
+        case .fishAudio:
+            return try await requestFishAudio(
+                base: base,
+                apiKey: NetworkTTSConfig.apiKey(for: provider),
+                model: NetworkTTSConfig.model(for: provider),
+                referenceID: voice,
+                text: text
+            )
         }
     }
 
@@ -294,7 +312,7 @@ final class TTSEngine: NSObject, ObservableObject {
         voice: String,
         text: String
     ) async throws -> Data {
-        var request = URLRequest(url: base.appendingPathComponent("audio/speech"))
+        var request = URLRequest(url: endpointURL(base: base, path: "audio/speech"))
         request.httpMethod = "POST"
         request.timeoutInterval = 90
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -320,7 +338,7 @@ final class TTSEngine: NSObject, ObservableObject {
         voice: String,
         text: String
     ) async throws -> Data {
-        var request = URLRequest(url: base.appendingPathComponent("chat/completions"))
+        var request = URLRequest(url: endpointURL(base: base, path: "chat/completions"))
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -355,6 +373,48 @@ final class TTSEngine: NSObject, ObservableObject {
 
         guard !pcm.isEmpty else { throw TTSNetworkError.emptyAudio }
         return wavData(fromPCM16: pcm, sampleRate: 24_000, channels: 1)
+    }
+
+    private static func requestFishAudio(
+        base: URL,
+        apiKey: String,
+        model: String,
+        referenceID: String,
+        text: String
+    ) async throws -> Data {
+        var request = URLRequest(url: endpointURL(base: base, path: "tts"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 120
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue(model, forHTTPHeaderField: "model")
+
+        var body: [String: Any] = [
+            "text": text,
+            "format": "mp3",
+            "normalize": true,
+            "latency": "balanced"
+        ]
+        let cleanedReferenceID = referenceID.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !cleanedReferenceID.isEmpty {
+            body["reference_id"] = cleanedReferenceID
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try validate(data: data, response: response)
+        guard !data.isEmpty else { throw TTSNetworkError.emptyAudio }
+        return data
+    }
+
+    private static func endpointURL(base: URL, path: String) -> URL {
+        let normalizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let basePath = base.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if basePath == normalizedPath || basePath.hasSuffix("/\(normalizedPath)") {
+            return base
+        }
+        return base.appendingPathComponent(normalizedPath)
     }
 
     private static func extractAudioBase64(from json: [String: Any]) -> String? {

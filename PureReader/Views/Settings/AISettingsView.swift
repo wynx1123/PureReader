@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 
 struct AISettingsView: View {
     @State private var apiBaseURL = AIConfig.apiBaseURL
@@ -16,10 +17,17 @@ struct AISettingsView: View {
     @State private var miMoTTSBaseURL = NetworkTTSConfig.miMoBaseURL
     @State private var miMoTTSAPIKey = NetworkTTSConfig.miMoAPIKey
     @State private var miMoTTSModel = NetworkTTSConfig.miMoModel
+    @State private var fishTTSBaseURL = NetworkTTSConfig.fishBaseURL
+    @State private var fishTTSAPIKey = NetworkTTSConfig.fishAPIKey
+    @State private var fishTTSModel = NetworkTTSConfig.fishModel
+    @State private var fishReferenceID = NetworkTTSConfig.fishReferenceID
     @State private var showKey = false
     @State private var showTTSKeys = false
     @State private var testMessage: String?
     @State private var isTesting = false
+    @State private var fishTestMessage: String?
+    @State private var isTestingFishTTS = false
+    @State private var fishPreviewPlayer: AVAudioPlayer?
 
     var body: some View {
         Form {
@@ -140,6 +148,54 @@ struct AISettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Fish Audio") {
+                TextField("Fish Audio Base URL", text: $fishTTSBaseURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+
+                if showTTSKeys {
+                    TextField("Fish Audio API Key", text: $fishTTSAPIKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                } else {
+                    SecureField("Fish Audio API Key", text: $fishTTSAPIKey)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                }
+
+                TextField(String(localized: "模型"), text: $fishTTSModel)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                TextField(String(localized: "音色模型 ID（可选）"), text: $fishReferenceID)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+
+                Button {
+                    Task { await testFishAudio() }
+                } label: {
+                    if isTestingFishTTS {
+                        HStack {
+                            ProgressView()
+                            Text(String(localized: "正在测试语音"))
+                        }
+                    } else {
+                        Label(String(localized: "测试并播放语音"), systemImage: "play.circle")
+                    }
+                }
+                .disabled(
+                    isTestingFishTTS
+                        || fishTTSAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                )
+
+                if let fishTestMessage {
+                    Text(fishTestMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             Section(String(localized: "全书理解")) {
                 Toggle(String(localized: "AI 理解本书（向量 + 记忆锚点）"), isOn: $enableBookUnderstanding)
                 Text(String(localized: "开启后会在后台静默索引与摘要，不阻塞阅读。短篇(<2.5万字)跳过向量索引。"))
@@ -183,6 +239,7 @@ struct AISettingsView: View {
                 Text(String(localized: "• 支持第三方兼容网关（改 Base URL 与模型名即可）"))
                 Text(String(localized: "• TTS: POST {base}/audio/speech"))
                 Text(String(localized: "• MiMo TTS: POST {base}/chat/completions"))
+                Text(String(localized: "• Fish Audio: POST {base}/tts"))
             }
             .font(.caption)
         }
@@ -208,6 +265,10 @@ struct AISettingsView: View {
         miMoTTSBaseURL = NetworkTTSConfig.miMoBaseURL
         miMoTTSAPIKey = NetworkTTSConfig.miMoAPIKey
         miMoTTSModel = NetworkTTSConfig.miMoModel
+        fishTTSBaseURL = NetworkTTSConfig.fishBaseURL
+        fishTTSAPIKey = NetworkTTSConfig.fishAPIKey
+        fishTTSModel = NetworkTTSConfig.fishModel
+        fishReferenceID = NetworkTTSConfig.fishReferenceID
     }
 
     private func save() {
@@ -226,6 +287,10 @@ struct AISettingsView: View {
         NetworkTTSConfig.miMoBaseURL = miMoTTSBaseURL
         NetworkTTSConfig.miMoAPIKey = miMoTTSAPIKey
         NetworkTTSConfig.miMoModel = miMoTTSModel
+        NetworkTTSConfig.fishBaseURL = fishTTSBaseURL
+        NetworkTTSConfig.fishAPIKey = fishTTSAPIKey
+        NetworkTTSConfig.fishModel = fishTTSModel
+        NetworkTTSConfig.fishReferenceID = fishReferenceID
     }
 
     private func testConnection() async {
@@ -246,6 +311,38 @@ struct AISettingsView: View {
             testMessage = String(localized: "对话与向量均正常")
         } catch {
             testMessage = error.localizedDescription
+        }
+    }
+
+    private func testFishAudio() async {
+        save()
+        isTestingFishTTS = true
+        fishTestMessage = nil
+        defer { isTestingFishTTS = false }
+
+        do {
+            let audio = try await TTSEngine.previewAudio(
+                provider: .fishAudio,
+                voice: fishReferenceID
+            )
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .spokenAudio)
+            try session.setActive(true)
+            let player = try AVAudioPlayer(data: audio)
+            player.prepareToPlay()
+            guard player.play() else {
+                throw NSError(
+                    domain: "PureReader.FishAudio",
+                    code: -1,
+                    userInfo: [
+                        NSLocalizedDescriptionKey: String(localized: "测试音频无法播放")
+                    ]
+                )
+            }
+            fishPreviewPlayer = player
+            fishTestMessage = String(localized: "Fish Audio 请求成功，正在播放测试语音")
+        } catch {
+            fishTestMessage = error.localizedDescription
         }
     }
 }

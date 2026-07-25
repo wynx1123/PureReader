@@ -6,6 +6,14 @@ import Observation
 @MainActor
 @Observable
 final class ReaderViewModel {
+    private struct ChapterPaginationSnapshot: Sendable {
+        let index: Int
+        let title: String
+        let id: String
+        let text: String
+        let richContentData: Data?
+    }
+
     let book: Book
     private let context: ModelContext
 
@@ -30,6 +38,7 @@ final class ReaderViewModel {
     var showAIHistory = false
     private(set) var selectedRewriteText = ""
     private(set) var selectedRewriteOffset: Int?
+    var rewriteSelectionErrorMessage: String?
     var ttsErrorMessage: String?
     var isTTSSpeaking = false
     var isTTSPaused = false
@@ -39,6 +48,11 @@ final class ReaderViewModel {
     let timer = ReadingTimeTracker()
 
     private var paginateTask: Task<Void, Never>?
+    private var verticalPaginationTasks: [Int: Task<Void, Never>] = [:]
+    private var verticalPageCache: [Int: [ReaderPage]] = [:]
+    private var verticalSnapshots: [Int: ChapterPaginationSnapshot] = [:]
+    private var verticalLayout: TextPaginator.Layout?
+    private var verticalGenerationID = UUID()
     private var saveTask: Task<Void, Never>?
     private var understandingRefreshTask: Task<Void, Never>?
     private var ttsContinuationTask: Task<Void, Never>?
@@ -97,7 +111,7 @@ final class ReaderViewModel {
     }
 
     func onDisappear() {
-        paginateTask?.cancel()
+        cancelPaginationTasks()
         understandingRefreshTask?.cancel()
         ttsContinuationTask?.cancel()
         tts.stop()
@@ -140,7 +154,7 @@ final class ReaderViewModel {
         guard size.width > 10, size.height > 10 else { return }
 
         isPaginating = true
-        paginateTask?.cancel()
+        cancelPaginationTasks()
 
         let text = chapter.content
         let chapterID = chapter.id.uuidString
@@ -156,59 +170,44 @@ final class ReaderViewModel {
         let offsetToRestore = restoreOffset ?? currentPage?.location ?? book.currentPageOffset
 
         if settings.pageTurnMode == .verticalScroll {
-            let snapshots = chapters.enumerated().map { index, chapter in
-                (index: index, title: chapter.title, id: chapter.id.uuidString, text: chapter.content)
-            }
-            let targetChapterIndex = chapterIndex
+            verticalGenerationID = UUID()
+            let generation = verticalGenerationID
+            verticalSnapshots = Dictionary(uniqueKeysWithValues: chapters.enumerated().map { index, chapter in
+                (
+                    index,
+                    ChapterPaginationSnapshot(
+                        index: index,
+                        title: chapter.title,
+                        id: chapter.id.uuidString,
+                        text: chapter.content,
+                        richContentData: chapter.richContentData
+                    )
+                )
+            })
+            verticalLayout = layout
+            verticalPageCache = [:]
             pages = []
             verticalPages = []
-
-            paginateTask = Task.detached(priority: .userInitiated) {
-                var bookPages: [BookReaderPage] = []
-                for snapshot in snapshots {
-                    guard !Task.isCancelled else { return }
-                    let chapterPages = TextPaginator.paginate(
-                        chapterID: snapshot.id,
-                        text: snapshot.text,
-                        layout: layout
-                    )
-                    bookPages.append(contentsOf: chapterPages.map { page in
-                        BookReaderPage(
-                            id: BookPageID(
-                                chapterIndex: snapshot.index,
-                                pageIndex: page.id
-                            ),
-                            chapterTitle: snapshot.title,
-                            page: page,
-                            chapterPageCount: chapterPages.count
-                        )
-                    })
-                }
-
-                await MainActor.run { [weak self] in
-                    guard let self, !Task.isCancelled else { return }
-                    self.verticalPages = bookPages
-                    let chapterPages = bookPages
-                        .filter { $0.id.chapterIndex == targetChapterIndex }
-                        .map(\.page)
-                    self.pages = chapterPages
-                    self.pageIndex = TextPaginator.pageIndex(
-                        forCharacterOffset: offsetToRestore,
-                        in: chapterPages
-                    )
-                    self.isPaginating = false
-                    self.persistProgress(immediate: false)
-                }
-            }
+            paginateVerticalChapter(
+                chapterIndex,
+                generation: generation,
+                restoreOffset: offsetToRestore,
+                isInitial: true,
+                priority: .userInitiated
+            )
             return
         }
 
         verticalPages = []
+        verticalPageCache = [:]
+        verticalSnapshots = [:]
+        verticalLayout = nil
 
         paginateTask = Task.detached(priority: .userInitiated) {
             let result = TextPaginator.paginate(
                 chapterID: chapterID,
                 text: text,
+                richContentData: chapter.richContentData,
                 layout: layout
             )
             await MainActor.run { [weak self] in
@@ -234,9 +233,122 @@ final class ReaderViewModel {
             let ch = chapters[idx]
             let id = ch.id.uuidString
             let text = ch.content
+            let richContentData = ch.richContentData
             Task.detached(priority: .utility) {
-                _ = TextPaginator.paginate(chapterID: id, text: text, layout: layout)
+                _ = TextPaginator.paginate(
+                    chapterID: id,
+                    text: text,
+                    richContentData: richContentData,
+                    layout: layout
+                )
             }
+        }
+    }
+
+    private func cancelPaginationTasks() {
+        paginateTask?.cancel()
+        paginateTask = nil
+        for task in verticalPaginationTasks.values { task.cancel() }
+        verticalPaginationTasks = [:]
+    }
+
+    private func paginateVerticalChapter(
+        _ index: Int,
+        generation: UUID,
+        restoreOffset: Int? = nil,
+        isInitial: Bool = false,
+        priority: TaskPriority = .utility
+    ) {
+        guard generation == verticalGenerationID,
+              verticalPageCache[index] == nil,
+              verticalPaginationTasks[index] == nil,
+              let snapshot = verticalSnapshots[index],
+              let layout = verticalLayout
+        else { return }
+
+        let task = Task.detached(priority: priority) { [weak self] in
+            let result = TextPaginator.paginate(
+                chapterID: snapshot.id,
+                text: snapshot.text,
+                richContentData: snapshot.richContentData,
+                layout: layout
+            )
+            guard !Task.isCancelled else { return }
+            await MainActor.run { [weak self] in
+                guard let self,
+                      !Task.isCancelled,
+                      generation == self.verticalGenerationID
+                else { return }
+                self.verticalPaginationTasks[index] = nil
+                self.verticalPageCache[index] = result
+
+                if isInitial {
+                    self.pages = result
+                    self.pageIndex = TextPaginator.pageIndex(
+                        forCharacterOffset: restoreOffset ?? 0,
+                        in: result
+                    )
+                }
+                self.rebuildVerticalPages()
+
+                if isInitial {
+                    self.isPaginating = false
+                    self.persistProgress(immediate: false)
+                    self.preloadVerticalChapters(around: index)
+                }
+            }
+        }
+        verticalPaginationTasks[index] = task
+    }
+
+    private func rebuildVerticalPages() {
+        guard verticalPageCache[chapterIndex] != nil else {
+            verticalPages = []
+            return
+        }
+
+        var first = chapterIndex
+        var last = chapterIndex
+        while verticalPageCache[first - 1] != nil { first -= 1 }
+        while verticalPageCache[last + 1] != nil { last += 1 }
+
+        verticalPages = (first...last).flatMap { index -> [BookReaderPage] in
+            guard let chapterPages = verticalPageCache[index],
+                  let snapshot = verticalSnapshots[index]
+            else { return [] }
+            return chapterPages.map { page in
+                BookReaderPage(
+                    id: BookPageID(chapterIndex: index, pageIndex: page.id),
+                    chapterTitle: snapshot.title,
+                    page: page,
+                    chapterPageCount: chapterPages.count
+                )
+            }
+        }
+    }
+
+    private func preloadVerticalChapters(around index: Int) {
+        let generation = verticalGenerationID
+        paginateVerticalChapter(index + 1, generation: generation, priority: .userInitiated)
+        paginateVerticalChapter(index - 1, generation: generation)
+    }
+
+    func preloadVerticalPages(around id: BookPageID) {
+        guard settings.pageTurnMode == .verticalScroll,
+              let chapterPages = verticalPageCache[id.chapterIndex]
+        else { return }
+
+        let generation = verticalGenerationID
+        if id.pageIndex >= max(0, chapterPages.count - 4) {
+            paginateVerticalChapter(
+                id.chapterIndex + 1,
+                generation: generation,
+                priority: .userInitiated
+            )
+            paginateVerticalChapter(id.chapterIndex + 2, generation: generation)
+        }
+        if id.pageIndex <= 3 {
+            paginateVerticalChapter(id.chapterIndex - 1, generation: generation)
         }
     }
 
@@ -262,6 +374,8 @@ final class ReaderViewModel {
             pages = verticalPages
                 .filter { $0.id.chapterIndex == id.chapterIndex }
                 .map(\.page)
+            rebuildVerticalPages()
+            preloadVerticalChapters(around: id.chapterIndex)
         }
         pageIndex = id.pageIndex
         book.currentPageOffset = target.page.location
@@ -292,10 +406,10 @@ final class ReaderViewModel {
         book.currentPageOffset = 0
         pageIndex = 0
         if settings.pageTurnMode == .verticalScroll,
-           verticalPages.contains(where: { $0.id.chapterIndex == index }) {
-            pages = verticalPages
-                .filter { $0.id.chapterIndex == index }
-                .map(\.page)
+           let cachedPages = verticalPageCache[index] {
+            pages = cachedPages
+            rebuildVerticalPages()
+            preloadVerticalChapters(around: index)
             persistProgress(immediate: false)
             showChapterList = false
             return
@@ -316,15 +430,16 @@ final class ReaderViewModel {
         // Int.max/4 让 pageIndex 落在最后一页
         let restore = atEnd ? (Int.max / 4) : 0
         if settings.pageTurnMode == .verticalScroll,
-           let target = verticalPages.last(where: { $0.id.chapterIndex == targetChapterIndex }) {
+           let cachedPages = verticalPageCache[targetChapterIndex],
+           let target = cachedPages.last {
             clearRewriteSelection()
             chapterIndex = targetChapterIndex
             book.currentChapterIndex = targetChapterIndex
-            pages = verticalPages
-                .filter { $0.id.chapterIndex == targetChapterIndex }
-                .map(\.page)
-            pageIndex = atEnd ? target.id.pageIndex : 0
-            book.currentPageOffset = atEnd ? target.page.location : 0
+            pages = cachedPages
+            pageIndex = atEnd ? target.id : 0
+            book.currentPageOffset = atEnd ? target.location : 0
+            rebuildVerticalPages()
+            preloadVerticalChapters(around: targetChapterIndex)
             persistProgress(immediate: false)
             return
         }
@@ -435,7 +550,7 @@ final class ReaderViewModel {
         guard let chapter = currentChapter else { return }
         guard NetworkTTSConfig.isConfigured(for: settings.ttsProvider) else {
             ttsErrorMessage = String(
-                localized: "请先在设置的 AI 与语音页面配置 \(settings.ttsProvider.displayName)"
+                localized: "请先在 AI 与语音设置中配置 \(settings.ttsProvider.displayName) 并拉取选择模型"
             )
             showTTSBar = false
             return
@@ -515,6 +630,13 @@ final class ReaderViewModel {
 
     func beginRewriteForSelection() {
         guard !selectedRewriteText.isEmpty, selectedRewriteOffset != nil else { return }
+        guard !selectedRewriteText.contains(ChapterRichContent.imagePlaceholder) else {
+            rewriteSelectionErrorMessage = String(
+                localized: "所选内容包含图片，请只选择图片前后的一段文字"
+            )
+            clearRewriteSelection()
+            return
+        }
         showAIRewrite = true
     }
 
@@ -630,13 +752,23 @@ final class ReaderViewModel {
         style: RewriteStylePreset
     ) throws {
         let previousContent = chapter.content
+        let previousRichContentData = chapter.richContentData
         var updatedContent = previousContent
-        let utf16Offset = updatedContent.utf16.distance(
-            from: updatedContent.startIndex,
-            to: range.lowerBound
-        )
+        let replacementRange = NSRange(range, in: previousContent)
+        let richContent = ChapterRichContent.decode(previousRichContentData)
+        guard richContent?.containsImage(in: replacementRange) != true else {
+            throw RewriteApplyError.containsInlineImage
+        }
+        let utf16Offset = replacementRange.location
         updatedContent.replaceSubrange(range, with: rewritten)
         chapter.content = updatedContent
+        if let richContent {
+            let adjusted = richContent.adjustingForReplacement(
+                range: replacementRange,
+                replacementUTF16Length: (rewritten as NSString).length
+            )
+            chapter.richContentData = adjusted.images.isEmpty ? nil : adjusted.encoded()
+        }
 
         let record = RewriteRecord(
             bookID: book.id,
@@ -652,6 +784,7 @@ final class ReaderViewModel {
             try context.save()
         } catch {
             chapter.content = previousContent
+            chapter.richContentData = previousRichContentData
             context.delete(record)
             throw RewriteApplyError.saveFailed(error.localizedDescription)
         }
@@ -667,7 +800,8 @@ final class ReaderViewModel {
         scheduleUnderstandingRefresh()
 
         // 尽量保持当前页附近
-        let restore = book.currentPageOffset
+        let restore = min(utf16Offset, (updatedContent as NSString).length)
+        book.currentPageOffset = restore
         repaginate(restoreOffset: restore)
         persistProgress(immediate: true)
     }
@@ -695,28 +829,45 @@ final class ReaderViewModel {
             throw RewriteApplyError.noChapter
         }
         let previousContent = chapter.content
+        let previousRichContentData = chapter.richContentData
         var content = previousContent
+        let replacementRange: Range<String.Index>
         if let range = closestRange(
             of: record.rewrittenText,
             in: content,
             expectedUTF16Offset: record.originalUTF16Offset
         ) {
-            content.replaceSubrange(range, with: record.originalText)
+            replacementRange = range
         } else if let range = closestRange(
             of: record.rewrittenText.trimmingCharacters(in: .whitespacesAndNewlines),
             in: content,
             expectedUTF16Offset: record.originalUTF16Offset
         ) {
-            content.replaceSubrange(range, with: record.originalText)
+            replacementRange = range
         } else {
             throw RewriteApplyError.originalNotFound
         }
+        let replacementNSRange = NSRange(replacementRange, in: previousContent)
+        let previousPageOffset = book.currentPageOffset
+        let richContent = ChapterRichContent.decode(previousRichContentData)
+        guard richContent?.containsImage(in: replacementNSRange) != true else {
+            throw RewriteApplyError.containsInlineImage
+        }
+        content.replaceSubrange(replacementRange, with: record.originalText)
         chapter.content = content
+        if let richContent {
+            let adjusted = richContent.adjustingForReplacement(
+                range: replacementNSRange,
+                replacementUTF16Length: (record.originalText as NSString).length
+            )
+            chapter.richContentData = adjusted.images.isEmpty ? nil : adjusted.encoded()
+        }
         record.isUndone = true
         do {
             try context.save()
         } catch {
             chapter.content = previousContent
+            chapter.richContentData = previousRichContentData
             record.isUndone = false
             throw RewriteApplyError.saveFailed(error.localizedDescription)
         }
@@ -729,7 +880,17 @@ final class ReaderViewModel {
         )
         scheduleUnderstandingRefresh()
         if chapter.index == chapterIndex {
-            repaginate(restoreOffset: book.currentPageOffset)
+            let delta = (record.originalText as NSString).length - replacementNSRange.length
+            let restoreOffset: Int
+            if previousPageOffset >= NSMaxRange(replacementNSRange) {
+                restoreOffset = max(0, previousPageOffset + delta)
+            } else if previousPageOffset >= replacementNSRange.location {
+                restoreOffset = replacementNSRange.location
+            } else {
+                restoreOffset = previousPageOffset
+            }
+            book.currentPageOffset = restoreOffset
+            repaginate(restoreOffset: restoreOffset)
         }
         persistProgress(immediate: true)
         return true
@@ -826,12 +987,15 @@ final class ReaderViewModel {
 enum RewriteApplyError: LocalizedError {
     case noChapter
     case originalNotFound
+    case containsInlineImage
     case saveFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .noChapter: return String(localized: "当前无章节")
         case .originalNotFound: return String(localized: "未在章节中找到原文，请缩短选择范围后重试")
+        case .containsInlineImage:
+            return String(localized: "所选内容包含图片，请只改写图片前后的一段文字")
         case .saveFailed(let message): return String(localized: "保存改写失败：\(message)")
         }
     }

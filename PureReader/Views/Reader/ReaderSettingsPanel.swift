@@ -134,19 +134,12 @@ struct ReaderSettingsPanel: View {
                     }
 
                     if viewModel.settings.ttsProvider != .system {
-                        TextField(String(localized: "模型"), text: Binding(
-                            get: {
-                                NetworkTTSConfig.model(for: viewModel.settings.ttsProvider)
-                            },
-                            set: {
-                                NetworkTTSConfig.setModel(
-                                    $0,
-                                    for: viewModel.settings.ttsProvider
-                                )
-                            }
-                        ))
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
+                        LabeledContent(String(localized: "模型")) {
+                            let model = NetworkTTSConfig.model(for: viewModel.settings.ttsProvider)
+                            Text(model.isEmpty ? String(localized: "未选择") : model)
+                                .lineLimit(1)
+                                .foregroundStyle(model.isEmpty ? Color.secondary : Color.primary)
+                        }
                     }
 
                     if viewModel.settings.ttsProvider == .fishAudio {

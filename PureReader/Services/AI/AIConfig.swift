@@ -1,12 +1,17 @@
 import Foundation
 
-/// 用户自配的 OpenAI 兼容 API 配置（Keychain 不强制，UserDefaults 明文可选；生产可换 Keychain）
+/// AI 改写与向量接口可分别配置；密钥仅保存在 Keychain。
 enum AIConfig {
     private static let defaults = UserDefaults.standard
 
     private enum Key {
-        static let apiBaseURL = "ai.apiBaseURL"
-        static let apiKey = "ai.apiKey"
+        static let legacyBaseURL = "ai.apiBaseURL"
+        static let legacyAPIKey = "ai.apiKey"
+        static let didMigrateSeparatedEndpoints = "ai.didMigrateSeparatedEndpoints"
+        static let rewriteBaseURL = "ai.rewrite.baseURL"
+        static let rewriteAPIKey = "ai.rewrite.apiKey"
+        static let embeddingBaseURL = "ai.embedding.baseURL"
+        static let embeddingAPIKey = "ai.embedding.apiKey"
         static let chatModel = "ai.chatModel"
         static let embeddingModel = "ai.embeddingModel"
         static let embeddingDimensions = "ai.embeddingDimensions"
@@ -16,59 +21,65 @@ enum AIConfig {
         static let temperature = "ai.temperature"
     }
 
-    static var apiBaseURL: String {
+    static var rewriteBaseURL: String {
         get {
-            let v = defaults.string(forKey: Key.apiBaseURL)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return v.isEmpty ? "https://api.openai.com/v1" : v
+            migrateSeparatedEndpointsIfNeeded()
+            return storedValue(for: Key.rewriteBaseURL, fallback: "https://api.openai.com/v1")
         }
-        set { defaults.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Key.apiBaseURL) }
+        set { defaults.set(clean(newValue), forKey: Key.rewriteBaseURL) }
+    }
+
+    static var rewriteAPIKey: String {
+        get {
+            migrateSeparatedEndpointsIfNeeded()
+            return keychainValue(for: Key.rewriteAPIKey)
+        }
+        set { setKeychainValue(newValue, for: Key.rewriteAPIKey) }
+    }
+
+    static var embeddingBaseURL: String {
+        get {
+            migrateSeparatedEndpointsIfNeeded()
+            return storedValue(for: Key.embeddingBaseURL, fallback: "https://api.openai.com/v1")
+        }
+        set { defaults.set(clean(newValue), forKey: Key.embeddingBaseURL) }
+    }
+
+    static var embeddingAPIKey: String {
+        get {
+            migrateSeparatedEndpointsIfNeeded()
+            return keychainValue(for: Key.embeddingAPIKey)
+        }
+        set { setKeychainValue(newValue, for: Key.embeddingAPIKey) }
+    }
+
+    // 兼容旧调用方，语义固定为改写接口。
+    static var apiBaseURL: String {
+        get { rewriteBaseURL }
+        set { rewriteBaseURL = newValue }
     }
 
     static var apiKey: String {
-        get {
-            // 优先 Keychain；迁移旧 UserDefaults 明文
-            if let k = KeychainManager.get(Key.apiKey), !k.isEmpty {
-                return k
-            }
-            if let legacy = defaults.string(forKey: Key.apiKey), !legacy.isEmpty {
-                KeychainManager.set(legacy, forKey: Key.apiKey)
-                defaults.removeObject(forKey: Key.apiKey)
-                return legacy
-            }
-            return ""
-        }
-        set {
-            if newValue.isEmpty {
-                KeychainManager.delete(Key.apiKey)
-            } else {
-                KeychainManager.set(newValue, forKey: Key.apiKey)
-            }
-            defaults.removeObject(forKey: Key.apiKey)
-        }
+        get { rewriteAPIKey }
+        set { rewriteAPIKey = newValue }
     }
 
     static var chatModel: String {
-        get {
-            let v = defaults.string(forKey: Key.chatModel) ?? ""
-            return v.isEmpty ? "gpt-4o-mini" : v
-        }
-        set { defaults.set(newValue, forKey: Key.chatModel) }
+        get { clean(defaults.string(forKey: Key.chatModel) ?? "") }
+        set { defaults.set(clean(newValue), forKey: Key.chatModel) }
     }
 
     static var embeddingModel: String {
-        get {
-            let v = defaults.string(forKey: Key.embeddingModel) ?? ""
-            return v.isEmpty ? "text-embedding-3-small" : v
-        }
-        set { defaults.set(newValue, forKey: Key.embeddingModel) }
+        get { clean(defaults.string(forKey: Key.embeddingModel) ?? "") }
+        set { defaults.set(clean(newValue), forKey: Key.embeddingModel) }
     }
 
     static var embeddingDimensions: Int {
         get {
-            let v = defaults.integer(forKey: Key.embeddingDimensions)
-            return v > 0 ? v : 1536
+            guard defaults.object(forKey: Key.embeddingDimensions) != nil else { return 0 }
+            return max(0, defaults.integer(forKey: Key.embeddingDimensions))
         }
-        set { defaults.set(newValue, forKey: Key.embeddingDimensions) }
+        set { defaults.set(max(0, newValue), forKey: Key.embeddingDimensions) }
     }
 
     /// 「AI 理解本书」— 向量索引 + 记忆锚点后台消化
@@ -100,21 +111,100 @@ enum AIConfig {
 
     static var temperature: Double {
         get {
-            let v = defaults.double(forKey: Key.temperature)
-            return v > 0 ? v : 0.8
+            guard defaults.object(forKey: Key.temperature) != nil else { return 0.8 }
+            return defaults.double(forKey: Key.temperature)
         }
         set { defaults.set(newValue, forKey: Key.temperature) }
     }
 
     static var isConfigured: Bool {
-        !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        isRewriteConfigured
     }
 
-    /// 规范化 base URL，去掉末尾 `/`，确保以 `/v1` 结尾可选
+    static var isRewriteConfigured: Bool {
+        !rewriteAPIKey.isEmpty
+            && !chatModel.isEmpty
+            && resolvedRewriteBaseURL() != nil
+    }
+
+    static var isEmbeddingConfigured: Bool {
+        !embeddingAPIKey.isEmpty
+            && !embeddingModel.isEmpty
+            && resolvedEmbeddingBaseURL() != nil
+    }
+
     static func resolvedBaseURL() -> URL? {
-        var s = apiBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        while s.hasSuffix("/") { s.removeLast() }
-        return URL(string: s)
+        resolvedRewriteBaseURL()
+    }
+
+    static func resolvedRewriteBaseURL() -> URL? {
+        resolvedURL(rewriteBaseURL)
+    }
+
+    static func resolvedEmbeddingBaseURL() -> URL? {
+        resolvedURL(embeddingBaseURL)
+    }
+
+    private static func migrateSeparatedEndpointsIfNeeded() {
+        guard !defaults.bool(forKey: Key.didMigrateSeparatedEndpoints) else { return }
+
+        let legacyBase = storedValue(
+            for: Key.legacyBaseURL,
+            fallback: "https://api.openai.com/v1"
+        )
+        if defaults.string(forKey: Key.rewriteBaseURL) == nil {
+            defaults.set(legacyBase, forKey: Key.rewriteBaseURL)
+        }
+        if defaults.string(forKey: Key.embeddingBaseURL) == nil {
+            defaults.set(legacyBase, forKey: Key.embeddingBaseURL)
+        }
+
+        let legacyKey = keychainValue(for: Key.legacyAPIKey).isEmpty
+            ? clean(defaults.string(forKey: Key.legacyAPIKey) ?? "")
+            : keychainValue(for: Key.legacyAPIKey)
+        if !legacyKey.isEmpty {
+            if keychainValue(for: Key.rewriteAPIKey).isEmpty {
+                KeychainManager.set(legacyKey, forKey: Key.rewriteAPIKey)
+            }
+            if keychainValue(for: Key.embeddingAPIKey).isEmpty {
+                KeychainManager.set(legacyKey, forKey: Key.embeddingAPIKey)
+            }
+        }
+        defaults.removeObject(forKey: Key.legacyAPIKey)
+        defaults.set(true, forKey: Key.didMigrateSeparatedEndpoints)
+    }
+
+    private static func storedValue(for key: String, fallback: String) -> String {
+        let value = clean(defaults.string(forKey: key) ?? "")
+        return value.isEmpty ? fallback : value
+    }
+
+    private static func clean(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func keychainValue(for key: String) -> String {
+        clean(KeychainManager.get(key) ?? "")
+    }
+
+    private static func setKeychainValue(_ value: String, for key: String) {
+        let cleaned = clean(value)
+        if cleaned.isEmpty {
+            KeychainManager.delete(key)
+        } else {
+            KeychainManager.set(cleaned, forKey: key)
+        }
+    }
+
+    private static func resolvedURL(_ value: String) -> URL? {
+        var raw = clean(value)
+        while raw.hasSuffix("/") { raw.removeLast() }
+        guard let url = URL(string: raw),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              url.host != nil
+        else { return nil }
+        return url
     }
 }
 
@@ -163,7 +253,7 @@ enum NetworkTTSConfig {
     }
 
     static var openAIModel: String {
-        get { value(for: Key.openAIModel, fallback: "gpt-4o-mini-tts") }
+        get { value(for: Key.openAIModel) }
         set { defaults.set(clean(newValue), forKey: Key.openAIModel) }
     }
 
@@ -178,7 +268,7 @@ enum NetworkTTSConfig {
     }
 
     static var miMoModel: String {
-        get { value(for: Key.miMoModel, fallback: "mimo-v2.5-tts") }
+        get { value(for: Key.miMoModel) }
         set { defaults.set(clean(newValue), forKey: Key.miMoModel) }
     }
 
@@ -193,7 +283,7 @@ enum NetworkTTSConfig {
     }
 
     static var fishModel: String {
-        get { value(for: Key.fishModel, fallback: "s2.1-pro-free") }
+        get { value(for: Key.fishModel) }
         set { defaults.set(clean(newValue), forKey: Key.fishModel) }
     }
 
@@ -213,11 +303,17 @@ enum NetworkTTSConfig {
         case .system:
             return true
         case .openAICompatible:
-            return !openAIAPIKey.isEmpty && resolvedBaseURL(for: provider) != nil
+            return !openAIAPIKey.isEmpty
+                && !openAIModel.isEmpty
+                && resolvedBaseURL(for: provider) != nil
         case .xiaomiMiMo:
-            return !miMoAPIKey.isEmpty && resolvedBaseURL(for: provider) != nil
+            return !miMoAPIKey.isEmpty
+                && !miMoModel.isEmpty
+                && resolvedBaseURL(for: provider) != nil
         case .fishAudio:
-            return !fishAPIKey.isEmpty && resolvedBaseURL(for: provider) != nil
+            return !fishAPIKey.isEmpty
+                && !fishModel.isEmpty
+                && resolvedBaseURL(for: provider) != nil
         }
     }
 
@@ -277,8 +373,12 @@ enum NetworkTTSConfig {
         return result
     }
 
+    private static func value(for key: String) -> String {
+        clean(defaults.string(forKey: key) ?? "")
+    }
+
     private static func value(for key: String, fallback: String) -> String {
-        let stored = clean(defaults.string(forKey: key) ?? "")
+        let stored = value(for: key)
         return stored.isEmpty ? fallback : stored
     }
 

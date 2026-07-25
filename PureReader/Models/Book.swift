@@ -100,18 +100,22 @@ final class Chapter {
     var title: String
     /// 正文可能很大，走外部存储
     @Attribute(.externalStorage) var content: String
+    /// EPUB 正文图片的位置与原始数据。
+    @Attribute(.externalStorage) var richContentData: Data?
     var book: Book?
 
     init(
         id: UUID = UUID(),
         index: Int,
         title: String,
-        content: String = ""
+        content: String = "",
+        richContentData: Data? = nil
     ) {
         self.id = id
         self.index = index
         self.title = title
         self.content = content
+        self.richContentData = richContentData
     }
 }
 

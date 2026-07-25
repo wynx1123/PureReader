@@ -4,6 +4,7 @@ import Foundation
 enum LLMClient {
     enum ClientError: LocalizedError {
         case notConfigured
+        case modelNotSelected
         case invalidURL
         case httpStatus(Int, String)
         case decodeFailed
@@ -14,6 +15,8 @@ enum LLMClient {
             switch self {
             case .notConfigured:
                 return String(localized: "请先在设置中配置 API Key")
+            case .modelNotSelected:
+                return String(localized: "请先从服务端拉取并选择模型")
             case .invalidURL:
                 return String(localized: "API 地址无效")
             case .httpStatus(let code, let body):
@@ -34,6 +37,41 @@ enum LLMClient {
         let content: String
     }
 
+    enum ModelAuthorization: Sendable {
+        case bearer
+        case apiKey
+    }
+
+    // MARK: - Models
+
+    static func fetchModels(
+        baseURL: String,
+        apiKey: String,
+        authorization: ModelAuthorization = .bearer,
+        timeout: TimeInterval = 30
+    ) async throws -> [String] {
+        let cleanedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleanedKey.isEmpty else { throw ClientError.notConfigured }
+        guard let base = validatedBaseURL(baseURL) else { throw ClientError.invalidURL }
+
+        var request = URLRequest(url: endpointURL(base: base, path: "models"))
+        request.httpMethod = "GET"
+        request.timeoutInterval = timeout
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        switch authorization {
+        case .bearer:
+            request.setValue("Bearer \(cleanedKey)", forHTTPHeaderField: "Authorization")
+        case .apiKey:
+            request.setValue(cleanedKey, forHTTPHeaderField: "api-key")
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        try throwIfNeeded(data: data, response: response)
+        let models = try parseModelIDs(data)
+        guard !models.isEmpty else { throw ClientError.emptyResponse }
+        return models
+    }
+
     // MARK: - Chat
 
     static func chat(
@@ -42,18 +80,21 @@ enum LLMClient {
         temperature: Double? = nil,
         timeout: TimeInterval = AIRewriteConstants.llmTimeout
     ) async throws -> String {
-        guard AIConfig.isConfigured else { throw ClientError.notConfigured }
-        guard let base = AIConfig.resolvedBaseURL() else { throw ClientError.invalidURL }
+        guard !AIConfig.rewriteAPIKey.isEmpty else { throw ClientError.notConfigured }
+        guard let base = AIConfig.resolvedRewriteBaseURL() else { throw ClientError.invalidURL }
+        let selectedModel = (model ?? AIConfig.chatModel)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !selectedModel.isEmpty else { throw ClientError.modelNotSelected }
 
-        let url = base.appendingPathComponent("chat/completions")
+        let url = endpointURL(base: base, path: "chat/completions")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(AIConfig.apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(AIConfig.rewriteAPIKey)", forHTTPHeaderField: "Authorization")
 
         let body: [String: Any] = [
-            "model": model ?? AIConfig.chatModel,
+            "model": selectedModel,
             "temperature": temperature ?? AIConfig.temperature,
             "messages": messages.map { ["role": $0.role, "content": $0.content] },
             "stream": false
@@ -86,19 +127,22 @@ enum LLMClient {
         dimensions: Int? = nil,
         timeout: TimeInterval = 120
     ) async throws -> [[Float]] {
-        guard AIConfig.isConfigured else { throw ClientError.notConfigured }
-        guard let base = AIConfig.resolvedBaseURL() else { throw ClientError.invalidURL }
+        guard !AIConfig.embeddingAPIKey.isEmpty else { throw ClientError.notConfigured }
+        guard let base = AIConfig.resolvedEmbeddingBaseURL() else { throw ClientError.invalidURL }
         guard !texts.isEmpty else { return [] }
+        let selectedModel = (model ?? AIConfig.embeddingModel)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !selectedModel.isEmpty else { throw ClientError.modelNotSelected }
 
-        let url = base.appendingPathComponent("embeddings")
+        let url = endpointURL(base: base, path: "embeddings")
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = timeout
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(AIConfig.apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("Bearer \(AIConfig.embeddingAPIKey)", forHTTPHeaderField: "Authorization")
 
         var body: [String: Any] = [
-            "model": model ?? AIConfig.embeddingModel,
+            "model": selectedModel,
             "input": texts
         ]
         let dims = dimensions ?? AIConfig.embeddingDimensions
@@ -148,6 +192,59 @@ enum LLMClient {
         guard (200..<300).contains(http.statusCode) else {
             let body = String(data: data, encoding: .utf8) ?? ""
             throw ClientError.httpStatus(http.statusCode, body)
+        }
+    }
+
+    private static func endpointURL(base: URL, path: String) -> URL {
+        let normalizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let basePath = base.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if basePath == normalizedPath || basePath.hasSuffix("/\(normalizedPath)") {
+            return base
+        }
+        return base.appendingPathComponent(normalizedPath)
+    }
+
+    private static func validatedBaseURL(_ value: String) -> URL? {
+        var raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        while raw.hasSuffix("/") { raw.removeLast() }
+        guard let url = URL(string: raw),
+              let scheme = url.scheme?.lowercased(),
+              ["http", "https"].contains(scheme),
+              url.host != nil
+        else { return nil }
+        return url
+    }
+
+    private static func parseModelIDs(_ data: Data) throws -> [String] {
+        let object = try JSONSerialization.jsonObject(with: data)
+        var ids: [String] = []
+
+        func append(from value: Any) {
+            if let id = value as? String {
+                ids.append(id)
+            } else if let item = value as? [String: Any],
+                      let id = item["id"] as? String {
+                ids.append(id)
+            }
+        }
+
+        if let root = object as? [String: Any] {
+            if let dataItems = root["data"] as? [Any] {
+                dataItems.forEach { append(from: $0) }
+            }
+            if let modelItems = root["models"] as? [Any] {
+                modelItems.forEach { append(from: $0) }
+            }
+        } else if let items = object as? [Any] {
+            items.forEach { append(from: $0) }
+        }
+
+        let cleaned = ids
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        guard !cleaned.isEmpty else { throw ClientError.decodeFailed }
+        return Array(Set(cleaned)).sorted {
+            $0.localizedStandardCompare($1) == .orderedAscending
         }
     }
 

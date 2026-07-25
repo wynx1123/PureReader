@@ -193,6 +193,52 @@ struct ParsedChapter: Sendable, Equatable {
     var index: Int
     var title: String
     var content: String
+    var richContentData: Data? = nil
+}
+
+struct ChapterInlineImage: Codable, Sendable, Equatable {
+    var utf16Location: Int
+    var data: Data
+    var altText: String
+}
+
+struct ChapterRichContent: Codable, Sendable, Equatable {
+    static let imagePlaceholder = "\u{FFFC}"
+
+    var images: [ChapterInlineImage]
+
+    static func decode(_ data: Data?) -> ChapterRichContent? {
+        guard let data else { return nil }
+        return try? JSONDecoder().decode(ChapterRichContent.self, from: data)
+    }
+
+    func encoded() -> Data? {
+        try? JSONEncoder().encode(self)
+    }
+
+    func adjustingForReplacement(
+        range: NSRange,
+        replacementUTF16Length: Int
+    ) -> ChapterRichContent {
+        let delta = replacementUTF16Length - range.length
+        let replacedEnd = NSMaxRange(range)
+        let adjusted = images.compactMap { image -> ChapterInlineImage? in
+            if image.utf16Location < range.location { return image }
+            if image.utf16Location < replacedEnd { return nil }
+            var shifted = image
+            shifted.utf16Location += delta
+            return shifted
+        }
+        return ChapterRichContent(images: adjusted)
+    }
+
+    func containsImage(in range: NSRange) -> Bool {
+        let end = NSMaxRange(range)
+        return images.contains { image in
+            image.utf16Location < end
+                && image.utf16Location + 1 > range.location
+        }
+    }
 }
 
 struct ParsedBook: Sendable {

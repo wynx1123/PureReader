@@ -75,7 +75,7 @@ struct AIRewriteSheet: View {
             if !AIConfig.isConfigured {
                 Section {
                     Label(
-                        String(localized: "请先在「设置 → AI」中配置 API Key"),
+                        String(localized: "请先在「设置 → AI」中配置接口并拉取选择模型"),
                         systemImage: "exclamationmark.triangle"
                     )
                     .foregroundStyle(.orange)

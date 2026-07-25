@@ -60,6 +60,7 @@ enum TextPaginator {
     static func paginate(
         chapterID: String,
         text: String,
+        richContentData: Data? = nil,
         layout: Layout
     ) -> [ReaderPage] {
         _ = chapterID
@@ -75,7 +76,13 @@ enum TextPaginator {
             return [ReaderPage(id: 0, location: 0, length: 0, attributedText: empty)]
         }
 
-        let attr = makeAttributedString(text: text, layout: layout)
+        let attr = makeAttributedString(
+            text: text,
+            richContentData: richContentData,
+            layout: layout,
+            maximumImageWidth: pageWidth,
+            maximumImageHeight: pageHeight * 0.72
+        )
         let fullRange = CFRange(location: 0, length: attr.length)
         let framesetter = CTFramesetterCreateWithAttributedString(attr as CFAttributedString)
 
@@ -135,7 +142,13 @@ enum TextPaginator {
         return pages.count - 1
     }
 
-    private static func makeAttributedString(text: String, layout: Layout) -> NSAttributedString {
+    private static func makeAttributedString(
+        text: String,
+        richContentData: Data?,
+        layout: Layout,
+        maximumImageWidth: CGFloat,
+        maximumImageHeight: CGFloat
+    ) -> NSAttributedString {
         let font = UIFont.systemFont(ofSize: layout.fontSize)
         let paragraph = NSMutableParagraphStyle()
         paragraph.lineSpacing = layout.lineSpacing
@@ -147,7 +160,47 @@ enum TextPaginator {
             .foregroundColor: color,
             .paragraphStyle: paragraph
         ]
-        return NSAttributedString(string: text, attributes: attrs)
+        let result = NSMutableAttributedString(string: text, attributes: attrs)
+        guard let rich = ChapterRichContent.decode(richContentData) else { return result }
+
+        for inlineImage in rich.images {
+            let range = NSRange(location: inlineImage.utf16Location, length: 1)
+            guard NSMaxRange(range) <= result.length,
+                  (result.string as NSString).substring(with: range)
+                    == ChapterRichContent.imagePlaceholder,
+                  let image = UIImage(data: inlineImage.data),
+                  image.size.width > 0,
+                  image.size.height > 0
+            else { continue }
+
+            let scale = min(
+                1,
+                maximumImageWidth / image.size.width,
+                maximumImageHeight / image.size.height
+            )
+            let attachment = NSTextAttachment()
+            attachment.image = image
+            attachment.bounds = CGRect(
+                x: 0,
+                y: -layout.fontSize * 0.2,
+                width: floor(image.size.width * scale),
+                height: floor(image.size.height * scale)
+            )
+            let replacement = NSMutableAttributedString(
+                attributedString: NSAttributedString(attachment: attachment)
+            )
+            let imageParagraph = paragraph.mutableCopy() as? NSMutableParagraphStyle
+            imageParagraph?.alignment = .center
+            if let imageParagraph {
+                replacement.addAttribute(
+                    .paragraphStyle,
+                    value: imageParagraph,
+                    range: NSRange(location: 0, length: replacement.length)
+                )
+            }
+            result.replaceCharacters(in: range, with: replacement)
+        }
+        return result
     }
 }
 

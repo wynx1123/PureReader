@@ -37,7 +37,7 @@ final class BookUnderstandingCoordinator {
 
     /// 打开书籍 / 导入后调用：若已配置 API 且开启「AI理解本书」则后台消化
     func scheduleIfNeeded(book: Book, context _: ModelContext) {
-        guard AIConfig.isConfigured, AIConfig.enableBookUnderstanding else { return }
+        guard AIConfig.isRewriteConfigured, AIConfig.enableBookUnderstanding else { return }
         let bookID = book.id
         if tasks[bookID] != nil { return }
 
@@ -52,7 +52,9 @@ final class BookUnderstandingCoordinator {
             await Task.yield()
             let chapters = (book.chapters ?? []).sorted { $0.index < $1.index }
             let wordCount = chapters.reduce(0) { $0 + $1.content.count }
-            let mode = IndexingMode.determine(wordCount: wordCount)
+            let mode = AIConfig.isEmbeddingConfigured
+                ? IndexingMode.determine(wordCount: wordCount)
+                : .skip
             let hasAnchors = BookMemoryAnchorStore.loadAnchors(bookID: bookID) != nil
             let snaps = chapters.map {
                 BookDigestPipeline.ChapterSnapshot(
@@ -107,13 +109,15 @@ final class BookUnderstandingCoordinator {
         BookMemoryAnchorStore.markBatchDirty(bookID: bookID, chapterIndex: chapterIndex)
         BookMemoryAnchorStore.invalidateAnchors(bookID: bookID)
         anchorsCache[bookID] = nil
+        guard AIConfig.isEmbeddingConfigured else { return }
         Task { [weak self] in
             guard let self else { return }
             let existing = await MainActor.run { self.indices[bookID] }
             let index = existing ?? BookVectorIndex()
             do {
-                if await index.entryCount == 0 {
-                    _ = await index.loadFromDisk(bookID: bookID)
+                if existing == nil {
+                    let loaded = await index.loadFromDisk(bookID: bookID)
+                    if !loaded { return }
                 }
                 try await index.invalidateChapter(
                     chapterID: chapterID,

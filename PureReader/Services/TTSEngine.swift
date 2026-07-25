@@ -62,7 +62,10 @@ final class TTSEngine: NSObject, ObservableObject {
 
         let source = text as NSString
         let safeOffset = min(max(0, startOffset), source.length)
-        let remaining = source.substring(from: safeOffset)
+        let remaining = source.substring(from: safeOffset).replacingOccurrences(
+            of: ChapterRichContent.imagePlaceholder,
+            with: "\n"
+        )
         guard !remaining.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             onFinishUtterance?()
             return
@@ -151,12 +154,10 @@ final class TTSEngine: NSObject, ObservableObject {
         case .xiaomiMiMo:
             return [
                 .init(id: "mimo_default", name: String(localized: "MiMo 默认")),
-                .init(id: "default_zh", name: String(localized: "中文女声")),
                 .init(id: "冰糖", name: String(localized: "冰糖（中文女声）")),
                 .init(id: "茉莉", name: String(localized: "茉莉（中文女声）")),
                 .init(id: "苏打", name: String(localized: "苏打（中文男声）")),
                 .init(id: "白桦", name: String(localized: "白桦（中文男声）")),
-                .init(id: "default_en", name: String(localized: "英文女声")),
                 .init(id: "Mia", name: "Mia"),
                 .init(id: "Chloe", name: "Chloe"),
                 .init(id: "Milo", name: "Milo"),
@@ -312,20 +313,30 @@ final class TTSEngine: NSObject, ObservableObject {
         voice: String,
         text: String
     ) async throws -> Data {
-        var request = URLRequest(url: endpointURL(base: base, path: "audio/speech"))
+        let url = endpointURL(base: base, path: "audio/speech")
+        var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 90
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+        request.setValue("audio/wav", forHTTPHeaderField: "Accept")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONSerialization.data(withJSONObject: [
+        var body: [String: Any] = [
             "model": model,
             "input": text,
             "voice": voice,
-            "response_format": "mp3"
-        ])
+            "response_format": "wav"
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        var (data, response) = try await URLSession.shared.data(for: request)
+        if let http = response as? HTTPURLResponse,
+           [400, 422].contains(http.statusCode) {
+            // 新版兼容网关可能使用 `format`，旧版 OpenAI 兼容接口使用 `response_format`。
+            body.removeValue(forKey: "response_format")
+            body["format"] = "wav"
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            (data, response) = try await URLSession.shared.data(for: request)
+        }
         try validate(data: data, response: response)
         guard !data.isEmpty else { throw TTSNetworkError.emptyAudio }
         return data
@@ -342,37 +353,23 @@ final class TTSEngine: NSObject, ObservableObject {
         request.httpMethod = "POST"
         request.timeoutInterval = 120
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue(apiKey, forHTTPHeaderField: "api-key")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": model,
             "messages": [["role": "assistant", "content": text]],
-            "audio": ["format": "pcm16", "voice": voice],
-            "stream": true
+            "audio": ["format": "wav", "voice": voice],
+            "stream": false
         ])
 
         let (data, response) = try await URLSession.shared.data(for: request)
         try validate(data: data, response: response)
-        guard let eventText = String(data: data, encoding: .utf8) else {
-            throw TTSNetworkError.invalidResponse
-        }
-
-        var pcm = Data()
-        for rawLine in eventText.components(separatedBy: .newlines) {
-            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard line.hasPrefix("data:") else { continue }
-            let payload = String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
-            guard payload != "[DONE]", let jsonData = payload.data(using: .utf8),
-                  let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-                  let encoded = extractAudioBase64(from: json),
-                  let chunk = Data(base64Encoded: encoded)
-            else { continue }
-            pcm.append(chunk)
-        }
-
-        guard !pcm.isEmpty else { throw TTSNetworkError.emptyAudio }
-        return wavData(fromPCM16: pcm, sampleRate: 24_000, channels: 1)
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let encoded = extractAudioBase64(from: json),
+              let audio = Data(base64Encoded: encoded, options: .ignoreUnknownCharacters),
+              !audio.isEmpty
+        else { throw TTSNetworkError.invalidResponse }
+        return audio
     }
 
     private static func requestFishAudio(
@@ -473,26 +470,6 @@ final class TTSEngine: NSObject, ObservableObject {
             location = end
         }
         return result
-    }
-
-    private static func wavData(fromPCM16 pcm: Data, sampleRate: UInt32, channels: UInt16) -> Data {
-        let bitsPerSample: UInt16 = 16
-        let byteRate = sampleRate * UInt32(channels) * UInt32(bitsPerSample / 8)
-        let blockAlign = channels * (bitsPerSample / 8)
-        var wav = Data("RIFF".utf8)
-        wav.appendLittleEndian(UInt32(36 + pcm.count))
-        wav.append(Data("WAVEfmt ".utf8))
-        wav.appendLittleEndian(UInt32(16))
-        wav.appendLittleEndian(UInt16(1))
-        wav.appendLittleEndian(channels)
-        wav.appendLittleEndian(sampleRate)
-        wav.appendLittleEndian(byteRate)
-        wav.appendLittleEndian(blockAlign)
-        wav.appendLittleEndian(bitsPerSample)
-        wav.append(Data("data".utf8))
-        wav.appendLittleEndian(UInt32(pcm.count))
-        wav.append(pcm)
-        return wav
     }
 
     // MARK: - Audio session and lock screen
@@ -636,7 +613,7 @@ private enum TTSNetworkError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .notConfigured(let provider):
-            return String(localized: "请先配置 \(provider) 的 API Key")
+            return String(localized: "请先配置 \(provider) 的接口、API Key 与模型")
         case .invalidURL:
             return String(localized: "TTS API 地址无效")
         case .unsupportedProvider:
@@ -648,12 +625,5 @@ private enum TTSNetworkError: LocalizedError {
         case .emptyAudio:
             return String(localized: "TTS API 未返回音频")
         }
-    }
-}
-
-private extension Data {
-    mutating func appendLittleEndian<T: FixedWidthInteger>(_ value: T) {
-        var littleEndian = value.littleEndian
-        Swift.withUnsafeBytes(of: &littleEndian) { append(contentsOf: $0) }
     }
 }

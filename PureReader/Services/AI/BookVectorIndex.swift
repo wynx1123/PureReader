@@ -17,6 +17,7 @@ actor BookVectorIndex {
         var bookID: String
         var model: String
         var dimensions: Int
+        var baseURL: String?
         var entries: [VectorEntry]
         var builtAt: Date
     }
@@ -32,7 +33,9 @@ actor BookVectorIndex {
         guard FileManager.default.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url),
               let payload = try? JSONDecoder().decode(DiskPayload.self, from: data),
-              payload.model == AIConfig.embeddingModel
+              payload.model == AIConfig.embeddingModel,
+              payload.dimensions == AIConfig.embeddingDimensions,
+              payload.baseURL == AIConfig.embeddingBaseURL
         else {
             return false
         }
@@ -47,6 +50,7 @@ actor BookVectorIndex {
             bookID: bookID.uuidString,
             model: AIConfig.embeddingModel,
             dimensions: AIConfig.embeddingDimensions,
+            baseURL: AIConfig.embeddingBaseURL,
             entries: entries,
             builtAt: Date()
         )
@@ -217,7 +221,8 @@ enum IndexingMode: Sendable {
     static func determine(wordCount: Int) -> IndexingMode {
         switch wordCount {
         case Int.min...0: return .skip
-        case 1..<500_000: return .fullAsync
+        case 1..<25_000: return .skip
+        case 25_000..<500_000: return .fullAsync
         default: return .slimAsync
         }
     }

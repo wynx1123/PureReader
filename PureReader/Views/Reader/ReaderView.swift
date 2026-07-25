@@ -96,6 +96,14 @@ struct ReaderView: View {
         } message: {
             Text(viewModel.ttsErrorMessage ?? "")
         }
+        .alert(String(localized: "无法改写"), isPresented: Binding(
+            get: { viewModel.rewriteSelectionErrorMessage != nil },
+            set: { if !$0 { viewModel.rewriteSelectionErrorMessage = nil } }
+        )) {
+            Button(String(localized: "好"), role: .cancel) {}
+        } message: {
+            Text(viewModel.rewriteSelectionErrorMessage ?? "")
+        }
         .background {
             GeometryReader { geo in
                 Color.clear
@@ -226,6 +234,9 @@ struct ReaderView: View {
                     )
                     .frame(height: max(viewModel.pageSize.height, 200))
                     .id(item.id)
+                    .onAppear {
+                        viewModel.preloadVerticalPages(around: item.id)
+                    }
                 }
             }
             .scrollTargetLayout()
@@ -244,7 +255,7 @@ struct ReaderView: View {
             }
         }
         .onChange(of: viewModel.verticalPages) { _, newValue in
-            guard !newValue.isEmpty else { return }
+            guard verticalPageID == nil, !newValue.isEmpty else { return }
             verticalPageID = viewModel.currentVerticalPageID
         }
     }

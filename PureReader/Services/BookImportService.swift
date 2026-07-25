@@ -334,7 +334,8 @@ enum BookImportService {
             let ch = Chapter(
                 index: normalizedIndex,
                 title: pc.title.isEmpty ? String(localized: "第 \(normalizedIndex + 1) 章") : pc.title,
-                content: pc.content.isEmpty ? " " : pc.content
+                content: pc.content.isEmpty ? " " : pc.content,
+                richContentData: pc.richContentData
             )
             ch.book = book
             chapterModels.append(ch)
@@ -402,7 +403,10 @@ enum BookImportService {
         for ch in chapters {
             parts.append(ch.title)
             parts.append("")
-            parts.append(ch.content)
+            parts.append(ch.content.replacingOccurrences(
+                of: ChapterRichContent.imagePlaceholder,
+                with: ""
+            ))
             parts.append("")
             parts.append("--------")
             parts.append("")

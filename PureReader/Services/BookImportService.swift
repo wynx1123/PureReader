@@ -283,12 +283,19 @@ enum BookImportService {
             throw ImportError.saveFailed(error.localizedDescription)
         }
 
-        updateKnownTags(tags, context: context)
+        do {
+            try updateKnownTags(tags, context: context)
+        } catch {
+            // The book itself was already committed, so don't report an import
+            // failure that would invite a duplicate retry. The tag index is
+            // auxiliary; make the persistence problem visible to diagnostics.
+            assertionFailure("Failed to update known tags: \(error)")
+        }
         return book
     }
 
     @MainActor
-    private static func updateKnownTags(_ tags: [String], context: ModelContext) {
+    private static func updateKnownTags(_ tags: [String], context: ModelContext) throws {
         guard !tags.isEmpty else { return }
         let descriptor = FetchDescriptor<ShelfPreferences>()
         let prefs = (try? context.fetch(descriptor))?.first
@@ -302,7 +309,7 @@ enum BookImportService {
         var set = Set(target.knownTags)
         for t in tags where !t.isEmpty { set.insert(t) }
         target.knownTags = set.sorted()
-        try? context.save()
+        try context.save()
     }
 
     @MainActor

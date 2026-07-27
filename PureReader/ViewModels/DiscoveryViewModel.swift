@@ -214,6 +214,8 @@ final class DiscoveryViewModel {
                 format: .online,
                 totalChapters: limited.count
             )
+            book.unreadChapterCount = limited.count
+            book.firstUnreadChapterIndex = limited.isEmpty ? -1 : 0
             context.insert(book)
 
             var chapters: [Chapter] = []
@@ -266,7 +268,12 @@ final class DiscoveryViewModel {
         source.enabled = true
         source.isValid = true
         source.lastCheckedAt = Date()
-        try? context.save()
+        do {
+            try context.save()
+        } catch {
+            errorMessage = String(localized: "验证信息保存失败：\(error.localizedDescription)")
+            return
+        }
         sourceCache[source.id] = BookSourceSnapshot(source)
         verificationRequest = nil
         statusMessage = String(localized: "验证信息已保存，请重试刚才的操作。")

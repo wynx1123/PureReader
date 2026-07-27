@@ -27,11 +27,12 @@
 		DE62899B20990402B132D81B /* BookSourceImporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 27115B364A53F9355FEBDF61 /* BookSourceImporter.swift */; };
 		96492DC83C7366C4B4EB5B97 /* EPUBParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4BC52EA7CAD93879EFE37190 /* EPUBParser.swift */; };
 		122EE91A989FC24C82979E6A /* KeychainManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81CC83F7D216C9FFFD9D6ECB /* KeychainManager.swift */; };
+		3B18688C95F13204DA01F491 /* OnlineLibraryService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C6D032664FF6173796003AF /* OnlineLibraryService.swift */; };
 		FD060C5BE6C7B4CB9769DB18 /* ReadingTimeTracker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33534C07741034E554798BBD /* ReadingTimeTracker.swift */; };
 		4C033D31464B268629F74648 /* RuleParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90203796579256B5793D10AD /* RuleParser.swift */; };
-		48A8795C8DCBD3DF186A2BDF /* TextPaginator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23FF3C151AE585D6A4ED59A /* TextPaginator.swift */; };
 		BAD14CBD7E53B5B3A9CD1A0D /* TTSEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = A4A040E1DF348436DD61CEE5 /* TTSEngine.swift */; };
 		2BE11912E0B63E64C50F10A5 /* TXTParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 056B534E2B058FF4C787EBE8 /* TXTParser.swift */; };
+		48A8795C8DCBD3DF186A2BDF /* TextPaginator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D23FF3C151AE585D6A4ED59A /* TextPaginator.swift */; };
 		0729A99487702446E0B15A2B /* ZIPUtility.swift in Sources */ = {isa = PBXBuildFile; fileRef = 291CCB0404C24C849C6D1A92 /* ZIPUtility.swift */; };
 		684A41D0F4E7B59B4691D4A8 /* BookshelfViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA1DF6161E865EEDB5A330E5 /* BookshelfViewModel.swift */; };
 		BD76A6533FEED52DA1BF7EED /* DiscoveryViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C100481FED886CC631C9BE5 /* DiscoveryViewModel.swift */; };
@@ -57,10 +58,12 @@
 		A20D6272AEEB1964F525FA11 /* BackupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7590587A6E1AEA3CD53FDA4 /* BackupView.swift */; };
 		192A1D6A37A36F428884270B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D1DFBA1F13C899B4456A507 /* SettingsView.swift */; };
 		DD767E3CA4EA94D2C274534F /* StatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4131F59CD796BE318D766A5C /* StatsView.swift */; };
+		AD0111B492990C7FBE6AE0C3 /* OnlineLibraryServiceTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B8565C986F9C80CE2661E610 /* OnlineLibraryServiceTests.swift */; };
 		D95C2E0E44ACA4D25BC59246 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4BBB33E2E51FAD6570CF4B94 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 /* Begin PBXFileReference section */
 		2678F494CC29BA8E2F0C4643 /* PureReader.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PureReader.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		362AB31F4E54B3A04FB7BB47 /* PureReaderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PureReaderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A9E1AD9B3EFF33706532C27B /* PureReaderApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PureReaderApp.swift; sourceTree = "<group>"; };
 		76032B3A7824F88070C35797 /* Color+Themes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Color+Themes.swift"; sourceTree = "<group>"; };
 		87D02527A4A36511FCC3233C /* View+TextureBackground.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "View+TextureBackground.swift"; sourceTree = "<group>"; };
@@ -83,11 +86,12 @@
 		27115B364A53F9355FEBDF61 /* BookSourceImporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookSourceImporter.swift; sourceTree = "<group>"; };
 		4BC52EA7CAD93879EFE37190 /* EPUBParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EPUBParser.swift; sourceTree = "<group>"; };
 		81CC83F7D216C9FFFD9D6ECB /* KeychainManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainManager.swift; sourceTree = "<group>"; };
+		0C6D032664FF6173796003AF /* OnlineLibraryService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnlineLibraryService.swift; sourceTree = "<group>"; };
 		33534C07741034E554798BBD /* ReadingTimeTracker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReadingTimeTracker.swift; sourceTree = "<group>"; };
 		90203796579256B5793D10AD /* RuleParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuleParser.swift; sourceTree = "<group>"; };
-		D23FF3C151AE585D6A4ED59A /* TextPaginator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextPaginator.swift; sourceTree = "<group>"; };
 		A4A040E1DF348436DD61CEE5 /* TTSEngine.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TTSEngine.swift; sourceTree = "<group>"; };
 		056B534E2B058FF4C787EBE8 /* TXTParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TXTParser.swift; sourceTree = "<group>"; };
+		D23FF3C151AE585D6A4ED59A /* TextPaginator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextPaginator.swift; sourceTree = "<group>"; };
 		291CCB0404C24C849C6D1A92 /* ZIPUtility.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZIPUtility.swift; sourceTree = "<group>"; };
 		FA1DF6161E865EEDB5A330E5 /* BookshelfViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookshelfViewModel.swift; sourceTree = "<group>"; };
 		7C100481FED886CC631C9BE5 /* DiscoveryViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryViewModel.swift; sourceTree = "<group>"; };
@@ -113,6 +117,7 @@
 		B7590587A6E1AEA3CD53FDA4 /* BackupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupView.swift; sourceTree = "<group>"; };
 		1D1DFBA1F13C899B4456A507 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		4131F59CD796BE318D766A5C /* StatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsView.swift; sourceTree = "<group>"; };
+		B8565C986F9C80CE2661E610 /* OnlineLibraryServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnlineLibraryServiceTests.swift; sourceTree = "<group>"; };
 		4BBB33E2E51FAD6570CF4B94 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 /* Begin PBXGroup section */
@@ -120,6 +125,7 @@
 			isa = PBXGroup;
 			children = (
 				7CBB5D451FE458AA0321FBEF /* PureReader */,
+				CEC4290FD49D87B0F83D52CD /* PureReaderTests */,
 				B88D7E26791946AEFDCC8BB7 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -128,8 +134,17 @@
 			isa = PBXGroup;
 			children = (
 				2678F494CC29BA8E2F0C4643 /* PureReader.app */,
+				362AB31F4E54B3A04FB7BB47 /* PureReaderTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		CEC4290FD49D87B0F83D52CD /* PureReaderTests */ = {
+			isa = PBXGroup;
+			children = (
+				B8565C986F9C80CE2661E610 /* OnlineLibraryServiceTests.swift */,
+			);
+			path = PureReaderTests;
 			sourceTree = "<group>";
 		};
 		7CBB5D451FE458AA0321FBEF /* PureReader */ = {
@@ -192,11 +207,12 @@
 				27115B364A53F9355FEBDF61 /* BookSourceImporter.swift */,
 				4BC52EA7CAD93879EFE37190 /* EPUBParser.swift */,
 				81CC83F7D216C9FFFD9D6ECB /* KeychainManager.swift */,
+				0C6D032664FF6173796003AF /* OnlineLibraryService.swift */,
 				33534C07741034E554798BBD /* ReadingTimeTracker.swift */,
 				90203796579256B5793D10AD /* RuleParser.swift */,
-				D23FF3C151AE585D6A4ED59A /* TextPaginator.swift */,
 				A4A040E1DF348436DD61CEE5 /* TTSEngine.swift */,
 				056B534E2B058FF4C787EBE8 /* TXTParser.swift */,
+				D23FF3C151AE585D6A4ED59A /* TextPaginator.swift */,
 				291CCB0404C24C849C6D1A92 /* ZIPUtility.swift */,
 			);
 			path = Services;
@@ -323,7 +339,27 @@
 			productReference = 2678F494CC29BA8E2F0C4643 /* PureReader.app */;
 			productType = "com.apple.product-type.application";
 		};
+		208C54D1C19CFF7994A925A1 /* PureReaderTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F4027707A82485679A3B8026 /* Build configuration list for PBXNativeTarget "PureReaderTests" */;
+			buildPhases = (
+				AD3D863858E44A74350712C1 /* Sources */,
+				EC51286CCF903911EFA27E6B /* Frameworks */,
+			);
+			buildRules = ();
+			dependencies = (A2B8588E071E9547FAA5B476 /* PBXTargetDependency */,);
+			name = PureReaderTests;
+			productName = PureReaderTests;
+			productReference = 362AB31F4E54B3A04FB7BB47 /* PureReaderTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
+/* Begin PBXContainerItemProxy section */
+		EA48666EEC4BE6835411A27E = {isa = PBXContainerItemProxy; containerPortal = 1781F676DEDF5767F3243DB0; proxyType = 1; remoteGlobalIDString = 730950AD798A77AD508AA9E2; remoteInfo = PureReader; };
+/* End PBXContainerItemProxy section */
+/* Begin PBXTargetDependency section */
+		A2B8588E071E9547FAA5B476 = {isa = PBXTargetDependency; target = 730950AD798A77AD508AA9E2; targetProxy = EA48666EEC4BE6835411A27E; };
+/* End PBXTargetDependency section */
 /* Begin PBXProject section */
 		1781F676DEDF5767F3243DB0 /* Project object */ = {
 			isa = PBXProject;
@@ -347,6 +383,7 @@
 			projectRoot = "";
 			targets = (
 				730950AD798A77AD508AA9E2 /* PureReader */,
+				208C54D1C19CFF7994A925A1 /* PureReaderTests */,
 			);
 		};
 /* End PBXProject section */
@@ -377,11 +414,12 @@
 				DE62899B20990402B132D81B /* BookSourceImporter.swift in Sources */,
 				96492DC83C7366C4B4EB5B97 /* EPUBParser.swift in Sources */,
 				122EE91A989FC24C82979E6A /* KeychainManager.swift in Sources */,
+				3B18688C95F13204DA01F491 /* OnlineLibraryService.swift in Sources */,
 				FD060C5BE6C7B4CB9769DB18 /* ReadingTimeTracker.swift in Sources */,
 				4C033D31464B268629F74648 /* RuleParser.swift in Sources */,
-				48A8795C8DCBD3DF186A2BDF /* TextPaginator.swift in Sources */,
 				BAD14CBD7E53B5B3A9CD1A0D /* TTSEngine.swift in Sources */,
 				2BE11912E0B63E64C50F10A5 /* TXTParser.swift in Sources */,
+				48A8795C8DCBD3DF186A2BDF /* TextPaginator.swift in Sources */,
 				0729A99487702446E0B15A2B /* ZIPUtility.swift in Sources */,
 				684A41D0F4E7B59B4691D4A8 /* BookshelfViewModel.swift in Sources */,
 				BD76A6533FEED52DA1BF7EED /* DiscoveryViewModel.swift in Sources */,
@@ -410,6 +448,11 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AD3D863858E44A74350712C1 /* Sources */ = {
+			isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (
+				AD0111B492990C7FBE6AE0C3 /* OnlineLibraryServiceTests.swift in Sources */,
+			); runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 /* Begin PBXFrameworksBuildPhase section */
 		56D9DEB7209CC2B39E593F03 /* Frameworks */ = {
@@ -419,6 +462,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		EC51286CCF903911EFA27E6B /* Frameworks */ = {isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; };
 /* End PBXFrameworksBuildPhase section */
 /* Begin PBXResourcesBuildPhase section */
 		85132AF6B5F14319CB4C91EC /* Resources */ = {
@@ -489,7 +533,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.wynx.PureReader;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -525,7 +569,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.wynx.PureReader;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -537,6 +581,30 @@
 			};
 			name = Release;
 		};
+		01021D09432A9D080A8DBFCF /* Debug */ = {isa = XCBuildConfiguration; buildSettings = {
+                BUNDLE_LOADER = "$(TEST_HOST)";
+                CODE_SIGNING_ALLOWED = NO;
+                GENERATE_INFOPLIST_FILE = YES;
+                IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+                PRODUCT_BUNDLE_IDENTIFIER = com.wynx.PureReader.Tests;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+                SWIFT_VERSION = 5.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+                TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PureReader.app/PureReader";
+		}; name = Debug; };
+		9324A8607D469F289D1E464B /* Release */ = {isa = XCBuildConfiguration; buildSettings = {
+                BUNDLE_LOADER = "$(TEST_HOST)";
+                CODE_SIGNING_ALLOWED = NO;
+                GENERATE_INFOPLIST_FILE = YES;
+                IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+                PRODUCT_BUNDLE_IDENTIFIER = com.wynx.PureReader.Tests;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+                SWIFT_VERSION = 5.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+                TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PureReader.app/PureReader";
+		}; name = Release; };
 /* End XCBuildConfiguration section */
 /* Begin XCConfigurationList section */
 		D0CC5AF107D418ACFEE1D49D /* Build configuration list for PBXProject "PureReader" */ = {
@@ -556,6 +624,11 @@
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
+		};
+		F4027707A82485679A3B8026 /* Build configuration list for PBXNativeTarget "PureReaderTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (01021D09432A9D080A8DBFCF /* Debug */, 9324A8607D469F289D1E464B /* Release */,);
+			defaultConfigurationIsVisible = 0; defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 	};

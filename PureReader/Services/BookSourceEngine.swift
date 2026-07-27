@@ -53,6 +53,23 @@ struct BookSourceSnapshot: Sendable {
 
 /// 书源网络引擎：搜索 / 目录 / 正文（15s 超时 + 最多 2 次重试）
 enum BookSourceEngine {
+    private final class RedirectSanitizingDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+        nonisolated func urlSession(
+            _ session: URLSession,
+            task: URLSessionTask,
+            willPerformHTTPRedirection response: HTTPURLResponse,
+            newRequest request: URLRequest,
+            completionHandler: @escaping (URLRequest?) -> Void
+        ) {
+            completionHandler(BookSourceEngine.sanitizedRedirectRequest(
+                request,
+                from: response.url
+            ))
+        }
+    }
+
+    private static let redirectDelegate = RedirectSanitizingDelegate()
+    private static let maximumResponseBytes = 8 * 1024 * 1024
     private struct SearchBatch: Sendable {
         var results: [SourceSearchResult]
         var failure: BookSourceSearchFailure?
@@ -63,16 +80,18 @@ enum BookSourceEngine {
         c.timeoutIntervalForRequest = 15
         c.timeoutIntervalForResource = 30
         c.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
-        c.httpShouldSetCookies = true
-        c.httpCookieAcceptPolicy = .always
+        // Book sources must not share ambient cookies. Authentication is explicit
+        // in each source's header JSON and is scoped to that source's origin below.
+        c.httpShouldSetCookies = false
+        c.httpCookieStorage = nil
         c.httpAdditionalHeaders = [
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 PureReader/1.0",
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 PureReader/1.1",
             // A few older book-source servers advertise broken gzip/br encodings.
             // Asking for identity avoids CFNetwork decode/parse failures (often code 303).
             "Accept-Encoding": "identity",
             "Accept-Language": "zh-CN,zh-Hans;q=0.9,en;q=0.5"
         ]
-        return URLSession(configuration: c)
+        return URLSession(configuration: c, delegate: redirectDelegate, delegateQueue: nil)
     }()
 
     // MARK: - Search
@@ -368,11 +387,18 @@ enum BookSourceEngine {
             throw BookSourceError.invalidURL
         }
         // If tocURL empty in rules, fetch book page and extract tocUrl then list
-        var body = try await fetchString(url: url, sourceHeaderJSON: source.headerJSON)
+        let trustedURL = trustedSourceURL(source: source, currentBookURL: bookURL)
+        var body = try await fetchString(
+            url: url,
+            headers: scopedHeaders(source.headerJSON, target: url, trustedSource: trustedURL)
+        )
         if let tocRule = rules.tocUrl, !tocRule.isEmpty,
            let next = RuleParser.getString(from: body, rule: tocRule, baseURL: url),
            let nextURL = URL(string: next.hasPrefix("http") ? next : RuleParser.resolveURL(next, base: url)) {
-            body = try await fetchString(url: nextURL, sourceHeaderJSON: source.headerJSON)
+            body = try await fetchString(
+                url: nextURL,
+                headers: scopedHeaders(source.headerJSON, target: nextURL, trustedSource: trustedURL)
+            )
             return parseChapters(body: body, base: nextURL, rules: rules)
         }
         return parseChapters(body: body, base: url, rules: rules)
@@ -405,13 +431,22 @@ enum BookSourceEngine {
     // MARK: - Content
 
     @MainActor
-    static func fetchContent(chapterURL: String, source: BookSource) async throws -> String {
-        try await fetchContent(chapterURL: chapterURL, source: BookSourceSnapshot(source))
+    static func fetchContent(
+        chapterURL: String,
+        source: BookSource,
+        currentBookURL: String? = nil
+    ) async throws -> String {
+        try await fetchContent(
+            chapterURL: chapterURL,
+            source: BookSourceSnapshot(source),
+            currentBookURL: currentBookURL
+        )
     }
 
     static func fetchContent(
         chapterURL: String,
-        source: BookSourceSnapshot
+        source: BookSourceSnapshot,
+        currentBookURL: String? = nil
     ) async throws -> String {
         let rules = source.rules
         var urlString = source.contentURL.isEmpty ? chapterURL : source.contentURL
@@ -419,8 +454,16 @@ enum BookSourceEngine {
             .replacingOccurrences(of: "{{chapterUrl}}", with: chapterURL)
             .replacingOccurrences(of: "{chapterUrl}", with: chapterURL)
         if urlString.isEmpty { urlString = chapterURL }
-        guard let url = URL(string: urlString) else { throw BookSourceError.invalidURL }
-        let body = try await fetchString(url: url, sourceHeaderJSON: source.headerJSON)
+        guard let url = URL(string: urlString),
+              let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else {
+            throw BookSourceError.invalidURL
+        }
+        // Never use an untrusted chapter URL as the credential boundary. The
+        // imported bookSourceUrl is authoritative; a current book detail URL is a
+        // compatibility fallback for older sources that did not persist one.
+        let trustedURL = trustedSourceURL(source: source, currentBookURL: currentBookURL)
+        let headers = scopedHeaders(source.headerJSON, target: url, trustedSource: trustedURL)
+        let body = try await fetchString(url: url, headers: headers)
         var text = RuleParser.getString(from: body, rule: rules.content, baseURL: url)
             ?? RuleParser.stripTags(body)
         text = RuleParser.applyReplacements(text, replaceRegex: rules.replaceRegex)
@@ -475,8 +518,15 @@ enum BookSourceEngine {
         url: URL,
         sourceHeaderJSON: String = ""
     ) async throws -> String {
+        try await fetchString(url: url, headers: parseHeaders(sourceHeaderJSON))
+    }
+
+    private static func fetchString(
+        url: URL,
+        headers: [String: String]
+    ) async throws -> String {
         var request = URLRequest(url: url)
-        for (name, value) in parseHeaders(sourceHeaderJSON) {
+        for (name, value) in headers {
             request.setValue(value, forHTTPHeaderField: name)
         }
         return try await fetchString(request: request)
@@ -490,7 +540,21 @@ enum BookSourceEngine {
             do {
                 var request = activeRequest
                 request.timeoutInterval = 15
-                let (data, response) = try await session.data(for: request)
+                let (bytes, response) = try await session.bytes(for: request)
+                guard response.expectedContentLength < 0
+                        || response.expectedContentLength <= Int64(maximumResponseBytes) else {
+                    throw OnlineLibraryError.responseTooLarge
+                }
+                var data = Data()
+                if response.expectedContentLength > 0 {
+                    data.reserveCapacity(min(Int(response.expectedContentLength), maximumResponseBytes))
+                }
+                for try await byte in bytes {
+                    guard data.count < maximumResponseBytes else {
+                        throw OnlineLibraryError.responseTooLarge
+                    }
+                    data.append(byte)
+                }
                 if verificationChallenge(data: data, response: response, fallbackURL: request.url) {
                     throw BookSourceError.verificationRequired(response.url ?? request.url!)
                 }
@@ -506,7 +570,14 @@ enum BookSourceEngine {
             } catch let error as BookSourceError {
                 // Verification and HTTP status errors are deterministic; retrying only delays the prompt.
                 throw error
+            } catch let error as OnlineLibraryError {
+                // Safety/policy errors are deterministic and must not be hidden by
+                // retries or transformed into a verification challenge.
+                throw error
             } catch {
+                if Task.isCancelled || isCancellation(error) {
+                    throw CancellationError()
+                }
                 lastError = error
                 if !didTryHTTPFallback,
                    let fallback = httpFallbackRequest(for: activeRequest, after: error) {
@@ -518,7 +589,7 @@ enum BookSourceEngine {
                     throw BookSourceError.verificationRequired(url)
                 }
                 if attempt < 2 {
-                    try? await Task.sleep(nanoseconds: UInt64(300_000_000 * (attempt + 1)))
+                    try await Task.sleep(nanoseconds: UInt64(300_000_000 * (attempt + 1)))
                 }
             }
         }
@@ -534,6 +605,7 @@ enum BookSourceEngine {
         after error: Error
     ) -> URLRequest? {
         guard request.url?.scheme?.lowercased() == "https",
+              allowsCleartextFallback(headers: request.allHTTPHeaderFields ?? [:]),
               isTLSOrHTTPParseError(error),
               var components = request.url.flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) }) else {
             return nil
@@ -543,6 +615,101 @@ enum BookSourceEngine {
         var fallback = request
         fallback.url = url
         return fallback
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let ns = error as NSError
+        return ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled
+    }
+
+    /// RFC-style origin comparison for the schemes supported by book sources.
+    /// Default ports are compared by their effective value, not textual spelling.
+    static func isSameOrigin(_ lhs: URL?, _ rhs: URL?) -> Bool {
+        guard let lhs, let rhs,
+              let leftScheme = lhs.scheme?.lowercased(),
+              let rightScheme = rhs.scheme?.lowercased(),
+              let leftHost = lhs.host?.lowercased(),
+              let rightHost = rhs.host?.lowercased(),
+              let leftPort = effectivePort(for: lhs),
+              let rightPort = effectivePort(for: rhs) else { return false }
+        return leftScheme == rightScheme && leftHost == rightHost && leftPort == rightPort
+    }
+
+    private static func effectivePort(for url: URL) -> Int? {
+        if let port = url.port { return port }
+        switch url.scheme?.lowercased() {
+        case "https": return 443
+        case "http": return 80
+        default: return nil
+        }
+    }
+
+    static func isSensitiveHeaderName(_ name: String) -> Bool {
+        let value = name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let exact: Set<String> = [
+            "authorization", "proxy-authorization", "cookie", "set-cookie",
+            "x-api-key", "api-key", "x-auth-token", "x-access-token",
+            "cf-access-client-secret"
+        ]
+        return exact.contains(value)
+            || value.hasSuffix("-token")
+            || value.hasSuffix("-secret")
+    }
+
+    static func containsSensitiveHeaders(_ headers: [String: String]) -> Bool {
+        headers.keys.contains(where: isSensitiveHeaderName)
+    }
+
+    static func allowsCleartextFallback(headers: [String: String]) -> Bool {
+        !containsSensitiveHeaders(headers)
+    }
+
+    static func removingSensitiveHeaders(_ headers: [String: String]) -> [String: String] {
+        headers.filter { !isSensitiveHeaderName($0.key) }
+    }
+
+    static func sanitizedRedirectRequest(_ request: URLRequest, from originalURL: URL?) -> URLRequest {
+        guard !isSameOrigin(originalURL, request.url) else { return request }
+        var sanitized = request
+        sanitized.allHTTPHeaderFields = removingSensitiveHeaders(request.allHTTPHeaderFields ?? [:])
+        return sanitized
+    }
+
+    private static func trustedSourceURL(source: BookSourceSnapshot, currentBookURL: String?) -> URL? {
+        let configured = source.bookURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let url = URL(string: configured), url.scheme != nil { return url }
+
+        // Legado commonly stores bookUrl as a relative parse rule. In that case
+        // the source's search/explore URL is the trusted configured origin; never
+        // promote an arbitrary chapter URL to this role.
+        for raw in [source.searchURL, source.exploreURL] {
+            let template = raw.components(separatedBy: ",").first ?? raw
+            if let url = URL(string: template.trimmingCharacters(in: .whitespacesAndNewlines)),
+               url.scheme != nil {
+                return url
+            }
+        }
+
+        guard let currentBookURL else { return nil }
+        return URL(string: currentBookURL)
+    }
+
+    static func scopedHeaders(
+        _ sourceHeaderJSON: String,
+        target: URL,
+        trustedSource: URL?
+    ) -> [String: String] {
+        let headers = parseHeaders(sourceHeaderJSON)
+        guard isSameOrigin(target, trustedSource) else {
+            return removingSensitiveHeaders(headers)
+        }
+        // Even on the trusted host, explicit credentials must never be sent in
+        // cleartext. Public sources (no sensitive fields) keep HTTP compatibility.
+        if target.scheme?.lowercased() == "http", containsSensitiveHeaders(headers) {
+            return removingSensitiveHeaders(headers)
+        }
+        return headers
     }
 
     private static func isTLSOrHTTPParseError(_ error: Error) -> Bool {

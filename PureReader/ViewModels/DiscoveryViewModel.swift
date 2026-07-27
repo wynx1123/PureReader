@@ -43,7 +43,7 @@ final class DiscoveryViewModel {
             uniquingKeysWith: { first, _ in first }
         )
         return sources
-            .filter { $0.enabled && !$0.searchURL.isEmpty }
+            .filter { $0.enabled && $0.isValid && !$0.searchURL.isEmpty }
             .map { BookSourceSnapshot($0) }
     }
 
@@ -108,9 +108,14 @@ final class DiscoveryViewModel {
         }
         let snapshots = prepareSources(sources)
         guard !snapshots.isEmpty else {
-            errorMessage = sources.isEmpty
-                ? String(localized: "尚未安装书源，请先在书源管理中导入。")
-                : String(localized: "没有已启用且可搜索的书源。")
+            let incompatible = sources.filter { !$0.isValid }.count
+            if sources.isEmpty {
+                errorMessage = String(localized: "尚未安装书源，请先在书源管理中导入。")
+            } else if incompatible == sources.count {
+                errorMessage = String(localized: "已安装 \(sources.count) 个书源，但都因脚本或规则兼容性被停用。请在书源管理中重新导入以重新评估，或导入无 JavaScript 的书源。")
+            } else {
+                errorMessage = String(localized: "已安装 \(sources.count) 个书源，但没有启用且可搜索的书源。请前往书源管理启用。")
+            }
             return
         }
         isSearching = true

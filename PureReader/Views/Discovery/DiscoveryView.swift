@@ -198,13 +198,23 @@ struct DiscoveryView: View {
     }
 
     private var discoveryEmptyState: some View {
-        ContentUnavailableView {
-            Label(String(localized: "暂未拉取到书籍"), systemImage: "books.vertical")
+        let enabledCount = sources.filter { $0.enabled && $0.isValid }.count
+        return ContentUnavailableView {
+            Label(
+                enabledCount > 0
+                    ? String(localized: "暂未拉取到书籍")
+                    : String(localized: "暂无可用书源"),
+                systemImage: enabledCount > 0 ? "books.vertical" : "server.rack"
+            )
         } description: {
-            if sources.isEmpty {
-                Text(String(localized: "请先导入支持发现或搜索的书源。"))
+            if let status = viewModel.statusMessage {
+                Text(status)
+            } else if sources.isEmpty {
+                Text(String(localized: "尚未安装书源，请先导入书源 JSON。"))
+            } else if enabledCount == 0 {
+                Text(String(localized: "已安装 \(sources.count) 个书源，但没有可用于搜索的书源。脚本型书源会为安全起见自动停用；重新导入可重新评估兼容性。"))
             } else {
-                Text(viewModel.statusMessage ?? String(localized: "切换分类、刷新，或到书源管理检查可用性。"))
+                Text(String(localized: "切换分类、刷新，或到书源管理检查可用性。"))
             }
         } actions: {
             Button(String(localized: "管理书源")) { showSourceManager = true }

@@ -237,7 +237,12 @@ enum BookSourceImporter {
             return String(localized: "搜索请求格式暂不支持")
         }
 
-        let searchRules = object["ruleSearch"] as? [String: Any] ?? [:]
+        guard let searchRules = object["ruleSearch"] as? [String: Any],
+              string(searchRules, "bookList") != nil,
+              string(searchRules, "name") != nil,
+              string(searchRules, "bookUrl") != nil else {
+            return String(localized: "缺少搜索列表、书名或详情地址规则")
+        }
         let ruleValues = searchRules.values.compactMap { $0 as? String }
         if ruleValues.contains(where: {
             let lowerRule = $0.lowercased()

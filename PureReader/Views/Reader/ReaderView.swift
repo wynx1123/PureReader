@@ -1,44 +1,19 @@
 import SwiftUI
 import SwiftData
 
-/// 一次阅读会话。
-///
-/// ViewModel 在这里创建，且只创建一次；`ReaderView` 本身只持有引用。
-/// 这样即使 SwiftUI 反复重建 `ReaderView` struct，也不会重复构造 `TTSEngine`。
-@MainActor
-final class ReaderSession: Identifiable {
-    let id: PersistentIdentifier
-    let viewModel: ReaderViewModel
-
-    init(book: Book, context: ModelContext) {
-        self.id = book.persistentModelID
-        self.viewModel = ReaderViewModel(book: book, context: context)
-    }
-}
-
 struct ReaderView: View {
+    @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
 
-    // 只持有引用，不负责创建 —— 见 ReaderSession。
-    @Bindable private var viewModel: ReaderViewModel
-
+    @State private var viewModel: ReaderViewModel
     @State private var curlIndex: Int = 0
-    @State private var verticalPageID: BookPageID?
-    @State private var showBookmarks = false
-    @State private var chapterListReversed = false
 
-    init(session: ReaderSession) {
-        self._viewModel = Bindable(session.viewModel)
+    init(book: Book, context: ModelContext) {
+        _viewModel = State(initialValue: ReaderViewModel(book: book, context: context))
     }
 
     private var bg: BackgroundType { viewModel.settings.backgroundColor }
-
-    /// 当前章的划线快照。Bookmark 是 @Model，不能直接下发给渲染层，
-    /// 在这里一次性转成值类型。
-    private var currentHighlights: [HighlightSpan] {
-        HighlightSpan.spans(from: viewModel.highlightsForCurrentChapter())
-    }
 
     var body: some View {
         ZStack {
@@ -52,8 +27,9 @@ struct ReaderView: View {
                     .tint(Color.readerForeground(bg))
             }
 
-            if !viewModel.selectedRewriteText.isEmpty {
-                rewriteSelectionAction
+            // 触控层：左/中/右
+            if !viewModel.showSettings && !viewModel.showChapterList {
+                tapZones
             }
 
             // 顶部/底部 Chrome
@@ -86,27 +62,11 @@ struct ReaderView: View {
         .sheet(isPresented: $viewModel.showChapterList) {
             chapterListSheet
         }
-        .sheet(item: $viewModel.verificationRequest) { request in
-            if let source = viewModel.verificationSource {
-                BookSourceVerificationView(
-                    request: request,
-                    headerJSON: source.headerJSON,
-                    onComplete: { cookie in viewModel.saveVerificationCookies(cookie) }
-                )
-            } else {
-                ContentUnavailableView(
-                    String(localized: "\u{4e66}\u{6e90}\u{5df2}\u{4e0d}\u{5b58}\u{5728}"),
-                    systemImage: "exclamationmark.triangle"
-                )
-            }
-        }
-        .sheet(isPresented: $viewModel.showAIRewrite, onDismiss: {
-            viewModel.clearRewriteSelection()
-        }) {
+        .sheet(isPresented: $viewModel.showAIRewrite) {
             if let chapter = viewModel.currentChapter {
                 AIRewriteSheet(
-                    pageText: viewModel.selectedRewriteText,
-                    pageUTF16Offset: viewModel.selectedRewriteOffset ?? 0,
+                    pageText: viewModel.currentPage?.attributedText.string ?? chapter.content,
+                    pageUTF16Offset: viewModel.currentPage?.location ?? 0,
                     chapterContent: chapter.content,
                     chapterTitle: chapter.title,
                     chapterIndex: viewModel.chapterIndex,
@@ -126,38 +86,17 @@ struct ReaderView: View {
         .sheet(isPresented: $viewModel.showAIHistory) {
             RewriteHistoryView(viewModel: viewModel)
         }
-        .sheet(isPresented: $showBookmarks) {
-            BookmarkListView(viewModel: viewModel)
-        }
-        .alert(String(localized: "听书失败"), isPresented: Binding(
-            get: { viewModel.ttsErrorMessage != nil },
-            set: { if !$0 { viewModel.ttsErrorMessage = nil } }
-        )) {
-            Button(String(localized: "好"), role: .cancel) {}
-        } message: {
-            Text(viewModel.ttsErrorMessage ?? "")
-        }
-        .alert(String(localized: "无法改写"), isPresented: Binding(
-            get: { viewModel.rewriteSelectionErrorMessage != nil },
-            set: { if !$0 { viewModel.rewriteSelectionErrorMessage = nil } }
-        )) {
-            Button(String(localized: "好"), role: .cancel) {}
-        } message: {
-            Text(viewModel.rewriteSelectionErrorMessage ?? "")
-        }
-        .alert(String(localized: "\u{7ae0}\u{8282}\u{52a0}\u{8f7d}\u{5931}\u{8d25}"), isPresented: Binding(
-            get: { viewModel.chapterLoadError != nil },
-            set: { if !$0 { viewModel.chapterLoadError = nil } }
-        )) {
-            Button(String(localized: "\u{91cd}\u{8bd5}")) {
-                viewModel.loadCurrentChapterContentIfNeeded(
-                    restoreOffset: viewModel.book.currentPageOffset,
-                    force: true
-                )
+        .contextMenu {
+            Button {
+                viewModel.showAIRewrite = true
+            } label: {
+                Label(String(localized: "AI 改写"), systemImage: "sparkles")
             }
-            Button(String(localized: "\u{53d6}\u{6d88}"), role: .cancel) {}
-        } message: {
-            Text(viewModel.chapterLoadError ?? "")
+            Button {
+                viewModel.showAIHistory = true
+            } label: {
+                Label(String(localized: "改写历史"), systemImage: "clock.arrow.circlepath")
+            }
         }
         .background {
             GeometryReader { geo in
@@ -185,35 +124,8 @@ struct ReaderView: View {
                 pageIndex: $curlIndex,
                 background: bg,
                 margin: viewModel.settings.pageMargin,
-                bookTitle: viewModel.book.title,
-                chapterTitle: viewModel.currentChapter?.title ?? "",
-                showHeader: viewModel.settings.showHeader,
-                showPageNumber: viewModel.settings.showPageNumber,
-                canGoToPreviousChapter: viewModel.chapterIndex > 0,
-                canGoToNextChapter: viewModel.chapterIndex + 1 < viewModel.chapters.count,
-                highlights: currentHighlights,
                 onIndexChange: { idx in
                     viewModel.goToPage(idx)
-                },
-                onPreviousChapter: {
-                    viewModel.previousChapter(atEnd: true)
-                },
-                onNextChapter: {
-                    viewModel.nextChapter()
-                },
-                onSelection: handleSelection,
-                onTap: { fraction in
-                    // 仿真翻页此前只响应中间区域，点两侧完全没反应，容易被当成失灵。
-                    // 这里改为与「左右滑动」一致的三段分区：点两侧翻页、点中间呼出菜单。
-                    // curlIndex 由 onChange(of: viewModel.pageIndex) 同步，
-                    // UIPageViewController 会带卷曲动画跟随。
-                    if fraction < 0.28 {
-                        viewModel.previousPage()
-                    } else if fraction > 0.72 {
-                        viewModel.nextPage()
-                    } else {
-                        viewModel.toggleChrome()
-                    }
                 }
             )
             .onChange(of: viewModel.pageIndex) { _, new in
@@ -229,194 +141,78 @@ struct ReaderView: View {
     private var horizontalPager: some View {
         TabView(selection: Binding(
             get: { viewModel.pageIndex },
-            set: { newValue in
-                if newValue < 0 {
-                    viewModel.previousChapter(atEnd: true)
-                } else if newValue >= viewModel.pages.count {
-                    viewModel.nextChapter()
-                } else {
-                    viewModel.goToPage(newValue)
-                }
-            }
+            set: { viewModel.goToPage($0) }
         )) {
-            if viewModel.chapterIndex > 0 {
-                chapterBoundaryPage(
-                    title: viewModel.chapters[viewModel.chapterIndex - 1].title,
-                    systemImage: "chevron.left.2"
-                )
-                .tag(-1)
-            }
-
             ForEach(Array(viewModel.pages.enumerated()), id: \.element.id) { idx, page in
                 PageContent(
                     page: page,
                     background: bg,
                     margin: viewModel.settings.pageMargin,
-                    bookTitle: viewModel.book.title,
-                    chapterTitle: viewModel.currentChapter?.title ?? "",
-                    pageLabel: "\(idx + 1) / \(viewModel.pages.count)",
-                    showHeader: viewModel.settings.showHeader,
-                    showPageNumber: viewModel.settings.showPageNumber,
-                    highlights: currentHighlights,
-                    onSelection: handleSelection,
-                    onTap: handlePageTap
+                    pageLabel: "\(idx + 1) / \(viewModel.pages.count)"
                 )
                 .tag(idx)
             }
-
-            if viewModel.chapterIndex + 1 < viewModel.chapters.count {
-                chapterBoundaryPage(
-                    title: viewModel.chapters[viewModel.chapterIndex + 1].title,
-                    systemImage: "chevron.right.2"
-                )
-                .tag(viewModel.pages.count)
-            }
         }
         .tabViewStyle(.page(indexDisplayMode: .never))
-        .id(viewModel.currentChapter?.id)
     }
 
     private var verticalScroller: some View {
-        ScrollView(.vertical) {
+        ScrollView {
             LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(viewModel.verticalPages) { item in
+                ForEach(Array(viewModel.pages.enumerated()), id: \.element.id) { idx, page in
                     PageContent(
-                        page: item.page,
+                        page: page,
                         background: bg,
                         margin: viewModel.settings.pageMargin,
-                        bookTitle: viewModel.book.title,
-                        chapterTitle: item.chapterTitle,
-                        pageLabel: "\(item.id.pageIndex + 1) / \(item.chapterPageCount)",
-                        showHeader: viewModel.settings.showHeader,
-                        showPageNumber: viewModel.settings.showPageNumber,
-                        // 纵向模式同屏可见多个章节，按该页所属章取划线。
-                        highlights: HighlightSpan.spans(
-                            from: viewModel.highlights(forChapterIndex: item.id.chapterIndex)
-                        ),
-                        onSelection: { text, offset in
-                            viewModel.goToVerticalPage(item.id)
-                            handleSelection(text, offset)
-                        },
-                        onTap: { fraction in
-                            viewModel.goToVerticalPage(item.id)
-                            handlePageTap(fraction)
-                        }
+                        pageLabel: "\(idx + 1) / \(viewModel.pages.count)"
                     )
-                    .frame(height: max(viewModel.pageSize.height, 200))
-                    .id(item.id)
+                    .frame(minHeight: max(viewModel.pageSize.height, 200))
+                    .id(idx)
                     .onAppear {
-                        viewModel.preloadVerticalPages(around: item.id)
+                        if abs(idx - viewModel.pageIndex) > 0 {
+                            // 粗略同步进度
+                        }
                     }
                 }
             }
-            .scrollTargetLayout()
         }
         .scrollIndicators(.hidden)
-        .scrollPosition(id: $verticalPageID)
-        .onAppear { verticalPageID = viewModel.currentVerticalPageID }
-        .onChange(of: verticalPageID) { _, newValue in
-            if let newValue, newValue != viewModel.currentVerticalPageID {
-                viewModel.goToVerticalPage(newValue)
-            }
-        }
-        .onChange(of: viewModel.currentVerticalPageID) { _, newValue in
-            if verticalPageID != newValue {
-                verticalPageID = newValue
-            }
-        }
-        .onChange(of: viewModel.verticalPages) { _, newValue in
-            guard verticalPageID == nil, !newValue.isEmpty else { return }
-            verticalPageID = viewModel.currentVerticalPageID
-        }
     }
 
-    private func chapterBoundaryPage(title: String, systemImage: String) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.title2)
-            Text(title)
-                .font(.headline)
-                .lineLimit(2)
-                .multilineTextAlignment(.center)
-        }
-        .foregroundStyle(Color.readerSecondary(bg))
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .padding(viewModel.settings.pageMargin.edgeInset)
-    }
+    // MARK: - Tap zones
 
-    // MARK: - Reading interactions
-
-    private func handleSelection(_ text: String, _ offset: Int) {
-        viewModel.updateRewriteSelection(text: text, utf16Offset: offset)
-    }
-
-    /// 用当前选区新建划线。选区状态与 AI 改写共用同一套（文本 + 章内绝对偏移）。
-    private func addHighlight(color: HighlightColor) {
-        guard let offset = viewModel.selectedRewriteOffset else { return }
-        viewModel.addHighlight(
-            text: viewModel.selectedRewriteText,
-            utf16Offset: offset,
-            color: color
-        )
-        viewModel.clearRewriteSelection()
-    }
-
-    /// 点击翻页的横向分区：左 28% 上一页、右 28% 下一页、中间呼出菜单。
-    ///
-    /// 只在「左右滑动」模式下启用。上下滚动模式若也接这套分区，用户滑动时
-    /// 手指落在屏幕两侧就会被判成翻页，与滚动手势语义冲突且极易误触。
-    private func handlePageTap(_ fraction: CGFloat) {
-        guard viewModel.settings.pageTurnMode == .scroll else {
-            viewModel.toggleChrome()
-            return
-        }
-        if fraction < 0.28 {
-            viewModel.previousPage()
-        } else if fraction > 0.72 {
-            viewModel.nextPage()
-        } else {
-            viewModel.toggleChrome()
-        }
-    }
-
-    private var rewriteSelectionAction: some View {
-        VStack {
-            Spacer()
-            HStack(spacing: 10) {
-                Spacer()
-
-                // 划线不依赖 API Key，是选中文字后唯一零门槛的动作，放在改写左侧。
-                Menu {
-                    ForEach(HighlightColor.allCases) { color in
-                        Button {
-                            addHighlight(color: color)
-                        } label: {
-                            Label(color.displayName, systemImage: "highlighter")
-                        }
-                    }
-                } label: {
-                    Label(String(localized: "划线"), systemImage: "highlighter")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 14)
-                        .frame(height: 44)
+    private var tapZones: some View {
+        GeometryReader { geo in
+            if viewModel.settings.pageTurnMode == .pageCurl {
+                // 仿真翻页：仅中间区域点出菜单，左右交给 UIPageViewController
+                HStack(spacing: 0) {
+                    Color.clear.frame(width: geo.size.width * 0.28)
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { viewModel.toggleChrome() }
+                        .frame(width: geo.size.width * 0.44)
+                    Color.clear.frame(width: geo.size.width * 0.28)
                 }
-                .buttonStyle(.bordered)
+            } else {
+                HStack(spacing: 0) {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { viewModel.previousPage() }
+                        .frame(width: geo.size.width * 0.28)
 
-                Button {
-                    viewModel.beginRewriteForSelection()
-                } label: {
-                    Label(String(localized: "AI 改写"), systemImage: "sparkles")
-                        .font(.subheadline.weight(.semibold))
-                        .padding(.horizontal, 14)
-                        .frame(height: 44)
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { viewModel.toggleChrome() }
+                        .frame(width: geo.size.width * 0.44)
+
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { viewModel.nextPage() }
+                        .frame(width: geo.size.width * 0.28)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(.accentColor)
             }
-            .padding(.horizontal, 16)
-            .padding(.bottom, viewModel.chromeVisible || viewModel.showTTSBar ? 132 : 20)
         }
-        .transition(.move(edge: .bottom).combined(with: .opacity))
+        .opacity(0.01)
     }
 
     // MARK: - Chrome
@@ -443,27 +239,6 @@ struct ReaderView: View {
             }
 
             Spacer()
-
-            Button {
-                viewModel.toggleBookmarkAtCurrentPage()
-            } label: {
-                // 实心/空心区分当前页是否已加书签，省去再点开列表确认。
-                Image(systemName: viewModel.currentPageHasBookmark ? "bookmark.fill" : "bookmark")
-                    .frame(width: 44, height: 44)
-            }
-            .accessibilityLabel(
-                viewModel.currentPageHasBookmark
-                    ? String(localized: "取消书签")
-                    : String(localized: "添加书签")
-            )
-
-            Button {
-                showBookmarks = true
-            } label: {
-                Image(systemName: "text.badge.star")
-                    .frame(width: 44, height: 44)
-            }
-            .accessibilityLabel(String(localized: "书签与划线"))
 
             Button {
                 viewModel.showChapterList = true
@@ -515,12 +290,24 @@ struct ReaderView: View {
                 .accessibilityLabel(String(localized: "阅读设置"))
 
                 Button {
-                    viewModel.showAIHistory = true
+                    viewModel.showAIRewrite = true
                 } label: {
-                    Image(systemName: "clock.arrow.circlepath")
+                    Image(systemName: "sparkles")
                         .frame(width: 44, height: 44)
                 }
-                .accessibilityLabel(String(localized: "改写历史"))
+                .accessibilityLabel(String(localized: "AI 改写"))
+                .contextMenu {
+                    Button {
+                        viewModel.showAIRewrite = true
+                    } label: {
+                        Label(String(localized: "AI 改写本页"), systemImage: "sparkles")
+                    }
+                    Button {
+                        viewModel.showAIHistory = true
+                    } label: {
+                        Label(String(localized: "改写历史 / 撤销"), systemImage: "clock.arrow.circlepath")
+                    }
+                }
 
                 Button {
                     viewModel.startTTSFromCurrentPage()
@@ -545,68 +332,36 @@ struct ReaderView: View {
     }
 
     private var chapterListSheet: some View {
-        let normal = Array(viewModel.chapters.enumerated())
-        let displayed = chapterListReversed ? Array(normal.reversed()) : normal
-        return NavigationStack {
-            ScrollViewReader { proxy in
-                List {
-                    ForEach(displayed, id: \.element.id) { index, chapter in
-                        Button {
-                            viewModel.goToChapter(index)
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(chapter.title)
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(2)
-                                    Text(String(localized: "\u{7b2c} \(index + 1) \u{7ae0}"))
-                                        .font(.caption2)
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                                if index == viewModel.chapterIndex {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(.tint)
-                                }
+        NavigationStack {
+            List {
+                ForEach(Array(viewModel.chapters.enumerated()), id: \.element.id) { idx, chapter in
+                    Button {
+                        viewModel.goToChapter(idx)
+                    } label: {
+                        HStack {
+                            Text(chapter.title)
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                            Spacer()
+                            if idx == viewModel.chapterIndex {
+                                Image(systemName: "checkmark")
+                                    .foregroundStyle(.tint)
                             }
-                            .frame(minHeight: 44)
                         }
-                        .id(chapter.id)
+                        .frame(minHeight: 44)
                     }
                 }
-                .onAppear { scrollToCurrentChapter(proxy) }
-                .onChange(of: chapterListReversed) { _, _ in
-                    scrollToCurrentChapter(proxy)
-                }
             }
-            .navigationTitle(String(localized: "\u{76ee}\u{5f55}"))
+            .navigationTitle(String(localized: "目录"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(String(localized: "\u{5173}\u{95ed}")) {
+                    Button(String(localized: "关闭")) {
                         viewModel.showChapterList = false
-                    }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        chapterListReversed.toggle()
-                    } label: {
-                        Label(
-                            chapterListReversed ? String(localized: "\u{6b63}\u{5e8f}") : String(localized: "\u{5012}\u{5e8f}"),
-                            systemImage: chapterListReversed ? "arrow.up" : "arrow.down"
-                        )
                     }
                 }
             }
         }
         .presentationDetents([.medium, .large])
-    }
-
-    private func scrollToCurrentChapter(_ proxy: ScrollViewProxy) {
-        guard let chapterID = viewModel.currentChapter?.id else { return }
-        Task { @MainActor in
-            await Task.yield()
-            proxy.scrollTo(chapterID, anchor: .center)
-        }
     }
 }

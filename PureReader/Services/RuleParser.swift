@@ -58,9 +58,7 @@ enum RuleParser {
     private static func evaluateSingle(content: String, rule: String, baseURL: URL?) -> String? {
         let (extractionRule, replacement) = splitExtractionAndReplacement(rule)
         let value: String?
-        if extractionRule.contains("{{"), extractionRule.contains("}}") {
-            value = renderJSONTemplate(content: content, template: extractionRule)
-        } else if extractionRule.hasPrefix("$.") || extractionRule.hasPrefix("$[") {
+        if extractionRule.hasPrefix("$.") || extractionRule.hasPrefix("$[") {
             value = jsonString(content: content, path: extractionRule)
         } else if extractionRule.hasPrefix("##") {
             value = regexFirst(content: content, rule: extractionRule)
@@ -86,66 +84,28 @@ enum RuleParser {
     }
 
     private static func normalizeLegadoRule(_ rule: String) -> String {
-        var working = rule.trimmingCharacters(in: .whitespaces)
-        for prefix in ["@css:", "@CSS:", "@json:", "@JSON:"] where working.hasPrefix(prefix) {
-            working = String(working.dropFirst(prefix.count))
-                .trimmingCharacters(in: .whitespaces)
-            break
-        }
-
-        // Legado chains selectors with "@": #author@tbody@tr!0 and
-        // class.item.0@tag.a.0@href. Keep the final known extraction token
-        // as the attribute and translate the preceding parts to descendant CSS.
-        var components = working.components(separatedBy: "@").filter { !$0.isEmpty }
-        guard !components.isEmpty else { return working }
-        let knownAttributes: Set<String> = [
-            "text", "textnodes", "html", "href", "src", "onclick",
-            "data-src", "data-original", "title", "alt", "content", "value"
-        ]
-        var attribute: String?
-        if let last = components.last, knownAttributes.contains(last.lowercased()) {
-            attribute = components.removeLast()
-        }
-        let selectors = components.compactMap(normalizeLegadoSelector)
-        guard !selectors.isEmpty else { return working }
-        let selector = selectors.joined(separator: " ")
-        return attribute.map { selector + "@" + $0 } ?? selector
-    }
-
-    private static func normalizeLegadoSelector(_ raw: String) -> String? {
-        var selector = raw.trimmingCharacters(in: .whitespaces)
-        guard !selector.isEmpty else { return nil }
-
-        // Positional suffixes are hints to Legado. The lightweight parser
-        // currently returns the first match, so preserve the selector and drop
-        // only the index suffix instead of accidentally turning `.odd.0` into tag `odd`.
-        selector = selector.replacingOccurrences(
-            of: #"\.(?:-?\d+|\d*:\d*)$"#,
-            with: "",
-            options: .regularExpression
-        )
-        selector = selector.replacingOccurrences(
-            of: #"\[(?:-?\d+|\d*:\d*)\]$"#,
-            with: "",
-            options: .regularExpression
-        )
-        if let bang = selector.lastIndex(of: "!") {
-            let suffix = selector[selector.index(after: bang)...]
-            if suffix.allSatisfy({ $0.isNumber || $0 == "-" || $0 == ":" || $0 == "," }) {
-                selector = String(selector[..<bang])
+        let components = rule.components(separatedBy: "@")
+        guard let rawSelector = components.first else { return rule }
+        let rawAttribute = components.count > 1 ? components.last : nil
+        let selectorParts = rawSelector.split(separator: ".").map(String.init)
+        var selector = rawSelector
+        if selectorParts.count >= 2 {
+            switch selectorParts[0].lowercased() {
+            case "class": selector = "." + selectorParts[1]
+            case "id": selector = "#" + selectorParts[1]
+            case "tag": selector = selectorParts[1]
+            default:
+                if Int(selectorParts.last ?? "") != nil {
+                    selector = selectorParts.dropLast().joined(separator: ".")
+                }
             }
         }
-
-        let parts = selector.split(separator: ".").map(String.init)
-        if parts.count >= 2 {
-            switch parts[0].lowercased() {
-            case "class": return "." + parts[1]
-            case "id": return "#" + parts[1]
-            case "tag": return parts[1]
-            default: break
-            }
+        guard let attribute = rawAttribute,
+              ["text", "textnodes", "html", "href", "src", "onclick"]
+                .contains(attribute.lowercased()) else {
+            return selector
         }
-        return selector
+        return selector + "@" + attribute
     }
 
     private static func splitExtractionAndReplacement(_ rule: String) -> (String, String?) {
@@ -169,46 +129,16 @@ enum RuleParser {
 
     // MARK: - JSON
 
-    private static func renderJSONTemplate(content: String, template: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: #"\{\{(\$[^}]+)\}\}"#) else {
-            return nil
-        }
-        let matches = regex.matches(
-            in: template,
-            range: NSRange(template.startIndex..., in: template)
-        )
-        guard !matches.isEmpty else { return template }
-        var result = template
-        for match in matches.reversed() {
-            guard let fullRange = Range(match.range(at: 0), in: result),
-                  let pathRange = Range(match.range(at: 1), in: result),
-                  let value = jsonString(content: content, path: String(result[pathRange])) else {
-                continue
-            }
-            result.replaceSubrange(fullRange, with: value)
-        }
-        return result.contains("{{") ? nil : result
-    }
-
     private static func jsonString(content: String, path: String) -> String? {
         guard let data = content.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) else { return nil }
-        return flattenedJSONValues(walkJSON(json, path: normalizeJSONPath(path)))
-            .first.flatMap { stringify($0) }
+        return walkJSON(json, path: normalizeJSONPath(path)).first.flatMap { stringify($0) }
     }
 
     private static func jsonList(content: String, path: String) -> [String] {
         guard let data = content.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) else { return [] }
-        return flattenedJSONValues(walkJSON(json, path: normalizeJSONPath(path)))
-            .compactMap { stringify($0) }
-    }
-
-    private static func flattenedJSONValues(_ values: [Any]) -> [Any] {
-        values.flatMap { value in
-            if let array = value as? [Any] { return array }
-            return [value]
-        }
+        return walkJSON(json, path: normalizeJSONPath(path)).compactMap { stringify($0) }
     }
 
     private static func normalizeJSONPath(_ path: String) -> [String] {
@@ -294,95 +224,9 @@ enum RuleParser {
         return (rule, "html")
     }
 
-    /// 后代选择器：`.list li`、`tbody tr`、`div.a > div.b`。
-    ///
-    /// 社区书源里这是最常见的形态。此前整串被当作单个简单选择器处理，
-    /// class/tag 里混进空格后永远匹配不到元素——书源看似启用，搜索却恒为 0 结果。
-    /// 这里逐段下钻：先在全文匹配第一段，再在其结果内匹配下一段。
-    /// 子代组合符 `>` 退化为后代匹配（正则方案无法区分层级，宁可多匹配）。
     private static func matchElements(html: String, selector: String) -> [String] {
-        let normalized = selector
-            .replacingOccurrences(of: ">", with: " ")
-            .trimmingCharacters(in: .whitespaces)
-        let segments = normalized
-            .split(separator: " ", omittingEmptySubsequences: true)
-            .map(String.init)
-        guard !segments.isEmpty else { return [] }
-        guard segments.count > 1 else {
-            return matchSimpleElements(html: html, selector: segments[0])
-        }
-
-        var current = [html]
-        for (offset, segment) in segments.enumerated() {
-            var next: [String] = []
-            for scope in current {
-                // 除第一段外，作用域是上一段匹配到的完整元素（含自身标签）。
-                // 必须先剥掉外层标签只留内容，否则在其中搜同名标签时，
-                // 正则的 `</\1>` 会先闭合到外层元素自己（`.list li` 里的 ul 命中 ul）。
-                let haystack = offset == 0 ? scope : innerHTML(of: scope)
-                next.append(contentsOf: matchSimpleElements(html: haystack, selector: segment))
-                if next.count >= 200 { break }
-            }
-            // 某一段匹配不到就整体失败，避免把上一层的结果当成最终结果返回。
-            if next.isEmpty { return [] }
-            current = Array(next.prefix(200))
-        }
-        return current
-    }
-
-    /// 剥掉元素最外层的开闭标签，只返回其内容。
-    private static func innerHTML(of element: String) -> String {
-        guard let openEnd = element.firstIndex(of: ">"),
-              let closeStart = element.range(of: "</", options: .backwards)?.lowerBound,
-              element.index(after: openEnd) <= closeStart else {
-            return element
-        }
-        return String(element[element.index(after: openEnd)..<closeStart])
-    }
-
-    /// HTML 空元素：无闭合标签，开标签即完整元素。
-    private static let voidElements: Set<String> = [
-        "img", "br", "hr", "input", "meta", "link", "area",
-        "base", "col", "embed", "source", "track", "wbr"
-    ]
-
-    /// 从 `start` 起找到与开标签配对的 `</tag>` 的结束位置（含闭合标签本身）。
-    /// 用深度计数跳过同名嵌套；找不到配对返回 nil。
-    private static func closingTagEnd(
-        in ns: NSString,
-        tag: String,
-        after start: Int
-    ) -> Int? {
-        let escaped = NSRegularExpression.escapedPattern(for: tag)
-        guard let regex = try? NSRegularExpression(
-            pattern: "<(/?)\(escaped)\\b([^>]*)>",
-            options: [.caseInsensitive]
-        ) else { return nil }
-
-        var depth = 1
-        let searchRange = NSRange(location: start, length: ns.length - start)
-        for m in regex.matches(in: ns as String, options: [], range: searchRange) {
-            let isClosing = m.range(at: 1).length > 0
-            if isClosing {
-                depth -= 1
-                if depth == 0 { return NSMaxRange(m.range) }
-            } else {
-                // 自闭合的同名标签不增加深度。
-                let attrs = ns.substring(with: m.range(at: 2))
-                if !attrs.hasSuffix("/") { depth += 1 }
-            }
-        }
-        return nil
-    }
-
-    private static func matchSimpleElements(html: String, selector: String) -> [String] {
         // Support: tag, tag.class, tag#id, .class, #id, tag[attr=value]
-        var sel = selector.trimmingCharacters(in: .whitespaces)
-        // jsoup 伪类（:contains(...)、:eq(0)、:not(...)）本引擎不支持。
-        // 剥掉后按基础选择器匹配，好过整条规则失效。
-        if let colon = sel.firstIndex(of: ":") {
-            sel = String(sel[..<colon])
-        }
+        let sel = selector.trimmingCharacters(in: .whitespaces)
         guard !sel.isEmpty else { return [] }
 
         var tag = "[a-zA-Z0-9]+"
@@ -403,53 +247,35 @@ enum RuleParser {
             tag = NSRegularExpression.escapedPattern(for: sel)
         }
 
-        // 只匹配「开标签」，逐个用深度计数找到各自的闭合标签。
-        //
-        // 此前用 `<(tag)\b([^>]*)>([\s\S]*?)</\1>` 一次性匹配整个元素，属性筛选在事后进行，
-        // 于是 `.list li` 这类规则必然失败：非贪婪匹配会先命中最外层的 <div class="wrap">，
-        // 把整段吞掉，游标直接跳到末尾，内层的 <ul class="list"> 根本没有机会被检验。
-        let openPattern = "<(\(tag))\\b([^>]*)>"
-        guard let openRegex = try? NSRegularExpression(
-            pattern: openPattern,
-            options: [.caseInsensitive]
-        ) else {
+        var pattern = "<(\(tag))\\b([^>]*)>([\\s\\S]*?)</\\1>"
+        if tag == "[a-zA-Z0-9]+" {
+            pattern = "<([a-zA-Z0-9]+)\\b([^>]*)>([\\s\\S]*?)</\\1>"
+        }
+
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
             return []
         }
-        let ns = html as NSString
-        let range = NSRange(location: 0, length: ns.length)
+        let range = NSRange(html.startIndex..., in: html)
+        let matches = regex.matches(in: html, options: [], range: range)
         var results: [String] = []
-
-        for m in openRegex.matches(in: html, options: [], range: range) {
-            let attrs = ns.substring(with: m.range(at: 2))
-            // 自闭合标签没有配对的闭合标签，跳过（下面的兜底分支单独处理）。
-            if attrs.hasSuffix("/") { continue }
-
+        for m in matches {
+            guard let full = Range(m.range, in: html),
+                  let attrR = Range(m.range(at: 2), in: html) else { continue }
+            let attrs = String(html[attrR])
             if let className {
-                // class 是空白分隔的 token 列表，做精确 token 比对。
+                // class contains token
                 let classPattern = "class\\s*=\\s*[\"']([^\"']*)[\"']"
                 guard let cre = try? NSRegularExpression(pattern: classPattern, options: .caseInsensitive),
                       let cm = cre.firstMatch(in: attrs, options: [], range: NSRange(attrs.startIndex..., in: attrs)),
                       let cr = Range(cm.range(at: 1), in: attrs) else { continue }
-                let classes = String(attrs[cr]).split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
-                guard classes.contains(where: { $0 == className }) else { continue }
+                let classes = String(attrs[cr]).split(separator: " ").map(String.init)
+                guard classes.contains(className) else { continue }
             }
             if let idName {
                 let idPattern = "id\\s*=\\s*[\"']\(NSRegularExpression.escapedPattern(for: idName))[\"']"
                 guard attrs.range(of: idPattern, options: [.regularExpression, .caseInsensitive]) != nil else { continue }
             }
-
-            let actualTag = ns.substring(with: m.range(at: 1))
-            if Self.voidElements.contains(actualTag.lowercased()) {
-                // img / br / input 等空元素没有闭合标签，开标签本身就是完整元素。
-                // 书源里 `img@src` 取封面很常见，不能因为找不到 </img> 就丢弃。
-                results.append(ns.substring(with: m.range))
-            } else if let end = closingTagEnd(in: ns, tag: actualTag, after: NSMaxRange(m.range)) {
-                results.append(
-                    ns.substring(with: NSRange(location: m.range.location, length: end - m.range.location))
-                )
-            } else {
-                continue
-            }
+            results.append(String(html[full]))
             if results.count >= 200 { break }
         }
         // also self-closing tags for img etc when attr only
@@ -469,7 +295,7 @@ enum RuleParser {
 
     private static func extractAttr(from elementHTML: String, attr: String, baseURL: URL?) -> String? {
         let a = attr.lowercased()
-        if a == "text" || a == "textnodes" {
+        if a == "text" || a == "textNodes" {
             return stripTags(elementHTML)
         }
         if a == "html" {

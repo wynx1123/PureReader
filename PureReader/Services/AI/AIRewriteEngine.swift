@@ -556,6 +556,37 @@ enum AIRewriteEngine {
     }
 }
 
+// MARK: - Style detector
+
+enum StyleDetector {
+    struct StyleProfile: Sendable {
+        var preset: RewriteStylePreset
+        var temperature: Double
+    }
+
+    static func analyze(_ text: String) -> StyleProfile {
+        let sentences = text.split { "。！？!?\n".contains($0) }
+        let averageLength = sentences.isEmpty
+            ? text.count
+            : sentences.map(\.count).reduce(0, +) / max(sentences.count, 1)
+        let dialogueMarks = text.filter { "“”\"「」".contains($0) }.count
+        let dialogueRatio = text.isEmpty ? 0 : Double(dialogueMarks) / Double(text.count)
+        let particleDensity = Double(text.filter { "的地得".contains($0) }.count)
+            / Double(max(text.count, 1))
+
+        if text.contains("剑") || text.contains("仙") || text.contains("内力") || text.contains("掌门") {
+            return StyleProfile(preset: .wuxia, temperature: 0.8)
+        }
+        if averageLength < 30 && dialogueRatio > 0.02 {
+            return StyleProfile(preset: .tomato, temperature: 0.7)
+        }
+        if averageLength > 60 && particleDensity > 0.04 {
+            return StyleProfile(preset: .literary, temperature: 0.6)
+        }
+        return StyleProfile(preset: .default, temperature: 0.8)
+    }
+}
+
 // MARK: - Validator
 
 enum RewriteValidator {

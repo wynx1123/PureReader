@@ -1,28 +1,22 @@
 [
   {
-    "name": "PureReader 链路验证书源",
-    "group": "内置示例",
-    "searchUrl": "https://cdn.jsdelivr.net/gh/wynx1123/PureReader@develop/docs/sample-catalog.json?key={{key}}&page={{page}}",
-    "bookUrl": "https://cdn.jsdelivr.net/gh/wynx1123/PureReader@develop/docs/",
+    "name": "示例书源（请替换为真实规则）",
+    "group": "demo",
+    "searchUrl": "https://example.com/search?q={{key}}&page={{page}}",
+    "bookUrl": "",
     "tocUrl": "",
     "contentUrl": "",
-    "enabled": true,
-    "format": "pureReader",
-    "comment": "用于验证 URL 导入、搜索、目录和正文拉取；搜索词不限。",
-    "ruleSearch": {
-      "bookList": "$[*]",
-      "name": "$.name",
-      "author": "$.author",
-      "intro": "$.intro",
-      "bookUrl": "$.bookUrl"
-    },
-    "ruleToc": {
-      "chapterList": "$.chapters",
-      "chapterName": "$.title",
-      "chapterUrl": "$.url"
-    },
-    "ruleContent": {
-      "content": "div#content@text"
+    "enabled": false,
+    "comment": "占位示例，检测会失败。请导入你自己的 Legado/爱阅记 JSON。",
+    "rule": {
+      "bookList": "",
+      "name": "",
+      "author": "",
+      "bookUrl": "",
+      "chapterList": "",
+      "chapterName": "",
+      "chapterUrl": "",
+      "content": ""
     }
   }
 ]

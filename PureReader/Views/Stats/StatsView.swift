@@ -157,11 +157,13 @@ struct ReadingHeatmap: View {
 
     var body: some View {
         let columns = Array(repeating: GridItem(.flexible(), spacing: 3), count: 12)
-        // 按周列：简化为 12 列 × 7 行。
-        // 直接遍历 days —— 它由 compactMap 生成，日历边界处可能少于 84 天，
-        // 按固定 0..<84 下标取值会越界。
+        // 按周列：简化为 12 列 × 7 行
+        let grid = stride(from: 0, to: 84, by: 1).map { offset -> Date in
+            days[offset]
+        }
+
         LazyVGrid(columns: columns, spacing: 3) {
-            ForEach(Array(days.enumerated()), id: \.offset) { _, date in
+            ForEach(Array(grid.enumerated()), id: \.offset) { _, date in
                 let seconds = dayMap[date] ?? 0
                 RoundedRectangle(cornerRadius: 2, style: .continuous)
                     .fill(color(for: seconds))

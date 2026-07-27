@@ -35,15 +35,17 @@ final class BookshelfViewModel {
     var showAddSheet = false
     var urlString = ""
     var pendingTags: String = ""
-    var pendingGroup: String = BuiltInGroup.defaultKey
+    var pendingGroup: String = BuiltInGroup.default
 
     func filteredSorted(_ books: [Book]) -> [Book] {
         var list = books
 
         if let g = selectedGroup {
-            // 两侧都先归一到稳定 key，存量的中文名与 "__default" 才能和当前选中值对上。
-            let target = BuiltInGroup.normalize(g)
-            list = list.filter { BuiltInGroup.normalize($0.group) == target }
+            if g == BuiltInGroup.default {
+                list = list.filter { $0.group == nil || $0.group?.isEmpty == true || $0.group == BuiltInGroup.default }
+            } else {
+                list = list.filter { $0.group == g }
+            }
         }
 
         if let tag = selectedTag, !tag.isEmpty {
@@ -72,104 +74,17 @@ final class BookshelfViewModel {
         return list
     }
 
-    /// 书架筛选栏用的分组全集：内置三组 + 书上出现过的分组 + 用户自定义组。
-    /// 返回的都是可直接写进 `Book.group` 的稳定 key（默认组用 `BuiltInGroup.defaultKey`）。
     func allGroups(from books: [Book], prefs: ShelfPreferences?) -> [String] {
-        var set = Set(BuiltInGroup.allKeys)
+        var set = Set(BuiltInGroup.all)
         for b in books {
-            // 存量的中文名先归一，避免「默认 / __default」并排出现两个胶囊。
-            if let g = BuiltInGroup.normalize(b.group) { set.insert(g) }
+            if let g = b.group, !g.isEmpty { set.insert(g) }
         }
-        for g in prefs?.customGroups ?? [] {
-            if let normalized = BuiltInGroup.normalize(g) { set.insert(normalized) }
-        }
+        for g in prefs?.customGroups ?? [] where !g.isEmpty { set.insert(g) }
         return set.sorted { a, b in
-            // 默认组恒定排第一，其余内置组优先于自定义组。
-            if a == BuiltInGroup.defaultKey { return true }
-            if b == BuiltInGroup.defaultKey { return false }
-            let aBuiltIn = BuiltInGroup.isBuiltIn(a)
-            let bBuiltIn = BuiltInGroup.isBuiltIn(b)
-            if aBuiltIn != bBuiltIn { return aBuiltIn }
-            return BuiltInGroup.displayName(for: a)
-                .localizedStandardCompare(BuiltInGroup.displayName(for: b)) == .orderedAscending
+            if a == BuiltInGroup.default { return true }
+            if b == BuiltInGroup.default { return false }
+            return a.localizedStandardCompare(b) == .orderedAscending
         }
-    }
-
-    // MARK: - 自定义分组
-
-    /// 新建自定义分组。去空白、去重，并拒绝与内置组重名（含本地化显示名）。
-    /// 返回是否真正写入了新分组。
-    @discardableResult
-    func createGroup(_ name: String, context: ModelContext) -> Bool {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        // 不允许伪造内置 key，也不允许用「默认 / 正在读 / 已读完」这类显示名占位。
-        guard !BuiltInGroup.isBuiltIn(trimmed) else { return false }
-        let builtInDisplayNames = BuiltInGroup.allKeys.map { BuiltInGroup.displayName(for: $0) }
-        guard !builtInDisplayNames.contains(trimmed) else { return false }
-
-        let prefs = shelfPreferences(in: context)
-        guard !prefs.customGroups.contains(trimmed) else { return false }
-        prefs.customGroups.append(trimmed)
-        prefs.customGroups.sort { $0.localizedStandardCompare($1) == .orderedAscending }
-        try? context.save()
-        return true
-    }
-
-    /// 删除自定义分组，并把该组下的书归回默认分组（`group = nil`）。
-    func deleteGroup(_ name: String, context: ModelContext) {
-        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !BuiltInGroup.isBuiltIn(trimmed) else { return }
-
-        let prefs = shelfPreferences(in: context)
-        prefs.customGroups.removeAll { $0 == trimmed }
-
-        for book in fetchBooks(in: context) where BuiltInGroup.normalize(book.group) == trimmed {
-            book.group = nil
-        }
-        if BuiltInGroup.normalize(selectedGroup) == trimmed { selectedGroup = nil }
-        if BuiltInGroup.normalize(pendingGroup) == trimmed { pendingGroup = BuiltInGroup.defaultKey }
-        try? context.save()
-    }
-
-    /// 重命名自定义分组，同步迁移该组下所有书的 `group` 字段。
-    /// 返回是否重命名成功（新名为空/重名/旧名不是自定义组时失败）。
-    @discardableResult
-    func renameGroup(_ old: String, to new: String, context: ModelContext) -> Bool {
-        let oldTrimmed = old.trimmingCharacters(in: .whitespacesAndNewlines)
-        let newTrimmed = new.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !oldTrimmed.isEmpty, !newTrimmed.isEmpty, oldTrimmed != newTrimmed else { return false }
-        // 内置组不可改名，也不能改成内置组的 key / 显示名。
-        guard !BuiltInGroup.isBuiltIn(oldTrimmed), !BuiltInGroup.isBuiltIn(newTrimmed) else { return false }
-        let builtInDisplayNames = BuiltInGroup.allKeys.map { BuiltInGroup.displayName(for: $0) }
-        guard !builtInDisplayNames.contains(newTrimmed) else { return false }
-
-        let prefs = shelfPreferences(in: context)
-        guard !prefs.customGroups.contains(newTrimmed) else { return false }
-        prefs.customGroups.removeAll { $0 == oldTrimmed }
-        prefs.customGroups.append(newTrimmed)
-        prefs.customGroups.sort { $0.localizedStandardCompare($1) == .orderedAscending }
-
-        for book in fetchBooks(in: context) where BuiltInGroup.normalize(book.group) == oldTrimmed {
-            book.group = newTrimmed
-        }
-        if BuiltInGroup.normalize(selectedGroup) == oldTrimmed { selectedGroup = newTrimmed }
-        if BuiltInGroup.normalize(pendingGroup) == oldTrimmed { pendingGroup = newTrimmed }
-        try? context.save()
-        return true
-    }
-
-    /// 读取（必要时创建）书架偏好单例行。与 BookImportService.updateKnownTags 同一套模板。
-    private func shelfPreferences(in context: ModelContext) -> ShelfPreferences {
-        let descriptor = FetchDescriptor<ShelfPreferences>()
-        if let existing = (try? context.fetch(descriptor))?.first { return existing }
-        let created = ShelfPreferences()
-        context.insert(created)
-        return created
-    }
-
-    private func fetchBooks(in context: ModelContext) -> [Book] {
-        (try? context.fetch(FetchDescriptor<Book>())) ?? []
     }
 
     func allTags(from books: [Book], prefs: ShelfPreferences?) -> [String] {
@@ -178,12 +93,6 @@ final class BookshelfViewModel {
             for t in b.tags where !t.isEmpty { set.insert(t) }
         }
         return set.sorted()
-    }
-
-    /// 清空「导入后应用」的元数据，恢复为默认分组与空标签。
-    func resetPendingMeta() {
-        pendingTags = ""
-        pendingGroup = BuiltInGroup.defaultKey
     }
 
     func parseTagsField(_ raw: String) -> [String] {
@@ -233,6 +142,25 @@ final class BookshelfViewModel {
         }
     }
 
+    /// 供非文件选择器来源复用；此路径无法保证外部 URL 的 scope 提前打开。
+    func importLocalURLs(_ urls: [URL], context: ModelContext) async {
+        guard !isImporting else { return }
+        isImporting = true
+        importErrorMessage = nil
+        importSuccessMessage = nil
+        importReport = nil
+        importProgressText = String(localized: "正在准备导入")
+        importProgressDetail = ""
+        await performLocalImport(urls, context: context)
+    }
+
+    private func performLocalImport(_ urls: [URL], context: ModelContext) async {
+        let scopedURLs = urls.map { url in
+            (url: url, accessed: url.startAccessingSecurityScopedResource())
+        }
+        await performScopedImport(scopedURLs, context: context)
+    }
+
     private func performScopedImport(
         _ scopedURLs: [(url: URL, accessed: Bool)],
         context: ModelContext
@@ -252,10 +180,6 @@ final class BookshelfViewModel {
             if scoped.accessed {
                 sourceURL.stopAccessingSecurityScopedResource()
             }
-            // UIDocumentPickerViewController(asCopy: true) 返回的是系统复制到本 App
-            // tmp 目录下的副本，所有权归 App，必须自行删除，
-            // 否则每导入一本就泄漏一份全量文件。
-            try? FileManager.default.removeItem(at: sourceURL)
         }
         await performStagedImport(staged, stagingFailures: failures, context: context)
     }
@@ -273,7 +197,7 @@ final class BookshelfViewModel {
         }
 
         let tags = parseTagsField(pendingTags)
-        let group = BuiltInGroup.normalize(pendingGroup)
+        let group = pendingGroup == BuiltInGroup.default ? nil : pendingGroup
         var importedTitles: [String] = []
         var importedBooks: [Book] = []
         var failures = stagingFailures
@@ -321,9 +245,6 @@ final class BookshelfViewModel {
             for book in importedBooks {
                 scheduleUnderstandingAfterImport(book, context: context)
             }
-            // 待应用的元数据是「本批次」的，导入成功后必须清空。
-            // 否则下一批导入会静默沿用上一批的标签与分组（用户毫无提示）。
-            resetPendingMeta()
         } else {
             let message = String(localized: "没有任何书籍被导入。请查看下方诊断信息。")
             importErrorMessage = failures.joined(separator: "\n")
@@ -386,7 +307,7 @@ final class BookshelfViewModel {
         defer { isImporting = false }
 
         let tags = parseTagsField(pendingTags)
-        let group = BuiltInGroup.normalize(pendingGroup)
+        let group = pendingGroup == BuiltInGroup.default ? nil : pendingGroup
         let urlText = urlString
 
         do {
@@ -403,7 +324,6 @@ final class BookshelfViewModel {
             urlString = ""
             showURLImporter = false
             showAddSheet = false
-            resetPendingMeta()
             importSuccessMessage = String(localized: "成功导入《\(book.title)》")
         } catch {
             importErrorMessage = (error as? LocalizedError)?.errorDescription

@@ -10,12 +10,8 @@ struct BookshelfView: View {
 
     @State private var viewModel = BookshelfViewModel()
     @State private var bookToEdit: Book?
-    @State private var bookForDetail: Book?
     @State private var bookPendingDelete: Book?
-    @State private var groupPendingRename: String?
-    @State private var renameGroupText = ""
-    /// 阅读会话在点击时建立一次，避免 cover 的 content 闭包每次求值都新建 ViewModel。
-    @State private var readerSession: ReaderSession?
+    @State private var bookToRead: Book?
     @State private var exportURL: URL?
     @State private var showExportSheet = false
     @State private var expandedImportReport = false
@@ -50,8 +46,8 @@ struct BookshelfView: View {
                     allowedContentTypes: BookImportService.allowedContentTypes,
                     allowsMultipleSelection: true,
                     onPick: { urls in
-                        viewModel.beginLocalImport(urls, context: modelContext)
                         viewModel.showImporter = false
+                        viewModel.beginLocalImport(urls, context: modelContext)
                     },
                     onCancel: {
                         viewModel.showImporter = false
@@ -70,48 +66,7 @@ struct BookshelfView: View {
                 set: { if !$0 { bookToEdit = nil } }
             )) {
                 if let book = bookToEdit {
-                    // 复用书架的 viewModel，否则编辑页内建的兜底实例与筛选状态不同步。
-                    BookEditSheet(book: book, viewModel: viewModel)
-                }
-            }
-            .sheet(isPresented: Binding(
-                get: { bookForDetail != nil },
-                set: { if !$0 { bookForDetail = nil } }
-            )) {
-                if let book = bookForDetail {
-                    BookDetailSheet(
-                        book: book,
-                        onRead: { openReader(book) },
-                        onEdit: { bookToEdit = book },
-                        onExport: {
-                            do {
-                                let url = try BookImportService.exportTXT(book: book)
-                                exportURL = url
-                                showExportSheet = true
-                            } catch {
-                                viewModel.importErrorMessage = error.localizedDescription
-                            }
-                        },
-                        onDelete: { bookPendingDelete = book }
-                    )
-                }
-            }
-            .alert(
-                String(localized: "重命名分组"),
-                isPresented: Binding(
-                    get: { groupPendingRename != nil },
-                    set: { if !$0 { groupPendingRename = nil } }
-                )
-            ) {
-                TextField(String(localized: "分组名称"), text: $renameGroupText)
-                Button(String(localized: "取消"), role: .cancel) {
-                    groupPendingRename = nil
-                }
-                Button(String(localized: "保存")) {
-                    if let old = groupPendingRename {
-                        viewModel.renameGroup(old, to: renameGroupText, context: modelContext)
-                    }
-                    groupPendingRename = nil
+                    BookEditSheet(book: book)
                 }
             }
             .sheet(isPresented: $showExportSheet) {
@@ -194,8 +149,13 @@ struct BookshelfView: View {
                         .allowsHitTesting(true)
                 }
             }
-            .fullScreenCover(item: $readerSession) { session in
-                ReaderView(session: session)
+            .fullScreenCover(isPresented: Binding(
+                get: { bookToRead != nil },
+                set: { if !$0 { bookToRead = nil } }
+            )) {
+                if let book = bookToRead {
+                    ReaderView(book: book, context: modelContext)
+                }
             }
         }
     }
@@ -221,29 +181,9 @@ struct BookshelfView: View {
                     ) {
                         viewModel.selectedGroup = nil
                     }
-                    // allGroups 返回的是稳定 key（如 "__default"），必须转成显示名再渲染。
                     ForEach(viewModel.allGroups(from: books, prefs: prefs), id: \.self) { g in
-                        chip(
-                            title: BuiltInGroup.displayName(for: g),
-                            selected: viewModel.selectedGroup == g
-                        ) {
+                        chip(title: g, selected: viewModel.selectedGroup == g) {
                             viewModel.selectedGroup = g
-                        }
-                        .contextMenu {
-                            // 内置组不可删改，只有用户自建的分组给出管理入口。
-                            if !BuiltInGroup.isBuiltIn(g) {
-                                Button {
-                                    groupPendingRename = g
-                                    renameGroupText = g
-                                } label: {
-                                    Label(String(localized: "重命名"), systemImage: "pencil")
-                                }
-                                Button(role: .destructive) {
-                                    viewModel.deleteGroup(g, context: modelContext)
-                                } label: {
-                                    Label(String(localized: "删除分组"), systemImage: "trash")
-                                }
-                            }
                         }
                     }
                 }
@@ -361,7 +301,7 @@ struct BookshelfView: View {
                 ForEach(displayed, id: \.persistentModelID) { book in
                     BookCard(book: book, style: .grid)
                         .contextMenu { bookMenu(book) }
-                        .onTapGesture { openReader(book) }
+                        .onTapGesture { bookToRead = book }
                 }
             }
             .padding(.horizontal, 16)
@@ -378,7 +318,7 @@ struct BookshelfView: View {
                     .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
                     .listRowBackground(Color.clear)
                     .contentShape(Rectangle())
-                    .onTapGesture { openReader(book) }
+                    .onTapGesture { bookToRead = book }
                     .contextMenu { bookMenu(book) }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         Button(role: .destructive) {
@@ -393,21 +333,12 @@ struct BookshelfView: View {
         .scrollContentBackground(.hidden)
     }
 
-    private func openReader(_ book: Book) {
-        readerSession = ReaderSession(book: book, context: modelContext)
-    }
-
     @ViewBuilder
     private func bookMenu(_ book: Book) -> some View {
         Button {
-            openReader(book)
+            bookToRead = book
         } label: {
             Label(String(localized: "阅读"), systemImage: "book")
-        }
-        Button {
-            bookForDetail = book
-        } label: {
-            Label(String(localized: "详情"), systemImage: "info.circle")
         }
         Button {
             bookToEdit = book

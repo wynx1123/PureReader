@@ -1,8 +1,0 @@
-[
-  {
-    "name": "PureReader 书源链路验证",
-    "author": "PureReader",
-    "intro": "用于确认远程书源能够完成搜索、目录解析和正文拉取。",
-    "bookUrl": "https://cdn.jsdelivr.net/gh/wynx1123/PureReader@develop/docs/sample-toc.json"
-  }
-]

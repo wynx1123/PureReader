@@ -68,52 +68,6 @@ enum PageTurnMode: String, Codable, CaseIterable, Sendable {
     }
 }
 
-enum TTSProvider: String, Codable, CaseIterable, Identifiable, Sendable {
-    case system
-    case openAICompatible
-    case xiaomiMiMo
-    case fishAudio
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .system: return String(localized: "系统语音")
-        case .openAICompatible: return String(localized: "OpenAI 兼容")
-        case .xiaomiMiMo: return String(localized: "小米 MiMo")
-        case .fishAudio: return "Fish Audio"
-        }
-    }
-
-    var defaultVoice: String {
-        switch self {
-        case .system: return ""
-        case .openAICompatible: return "marin"
-        case .xiaomiMiMo: return "mimo_default"
-        case .fishAudio: return ""
-        }
-    }
-}
-
-/// 划线颜色
-enum HighlightColor: String, Codable, CaseIterable, Identifiable, Sendable {
-    case yellow
-    case green
-    case blue
-    case pink
-
-    var id: String { rawValue }
-
-    var displayName: String {
-        switch self {
-        case .yellow: return String(localized: "黄")
-        case .green: return String(localized: "绿")
-        case .blue: return String(localized: "蓝")
-        case .pink: return String(localized: "粉")
-        }
-    }
-}
-
 /// 书架排序
 enum BookshelfSort: String, CaseIterable, Identifiable, Sendable {
     case lastRead
@@ -155,50 +109,18 @@ enum BookshelfLayout: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// 内置分组（`group == nil` 视为默认）。
-///
-/// 持久化的是稳定 key 而非本地化字符串。此前直接存 `String(localized:)` 的结果，
-/// 用户切换系统语言后存量 `Book.group` 会与新的显示名对不上，书会从分组里「消失」。
+/// 内置分组名（`group == nil` 视为默认）
 enum BuiltInGroup {
-    /// 存进 `Book.group` 的稳定标识。
-    static let defaultKey = "__default"
-    static let readingKey = "__reading"
-    static let finishedKey = "__finished"
+    static let `default` = String(localized: "默认")
+    static let reading = String(localized: "正在读")
+    static let finished = String(localized: "已读完")
 
-    static var allKeys: [String] { [defaultKey, readingKey, finishedKey] }
-
-    /// 兼容旧版本：早期把本地化后的中文名直接存进了 group 字段。
-    private static let legacyNames: [String: String] = [
-        "默认": defaultKey,
-        "正在读": readingKey,
-        "已读完": finishedKey
-    ]
-
-    static func isBuiltIn(_ key: String?) -> Bool {
-        guard let key else { return true }
-        return key.isEmpty || allKeys.contains(key) || legacyNames.keys.contains(key)
-    }
-
-    /// 把存量值归一到稳定 key；自定义分组原样返回。
-    static func normalize(_ stored: String?) -> String? {
-        guard let stored, !stored.isEmpty else { return nil }
-        if let mapped = legacyNames[stored] { return mapped == defaultKey ? nil : mapped }
-        return stored == defaultKey ? nil : stored
-    }
+    static var all: [String] { [`default`, reading, finished] }
 
     static func displayName(for stored: String?) -> String {
-        let key = normalize(stored)
-        switch key {
-        case .none: return String(localized: "默认")
-        case .some(readingKey): return String(localized: "正在读")
-        case .some(finishedKey): return String(localized: "已读完")
-        case .some(let custom): return custom
-        }
+        if let stored, !stored.isEmpty { return stored }
+        return `default`
     }
-
-    // 兼容旧调用方。
-    static var `default`: String { defaultKey }
-    static var all: [String] { allKeys }
 }
 
 enum ImportError: LocalizedError, Sendable {
@@ -244,52 +166,6 @@ struct ParsedChapter: Sendable, Equatable {
     var index: Int
     var title: String
     var content: String
-    var richContentData: Data? = nil
-}
-
-struct ChapterInlineImage: Codable, Sendable, Equatable {
-    var utf16Location: Int
-    var data: Data
-    var altText: String
-}
-
-struct ChapterRichContent: Codable, Sendable, Equatable {
-    static let imagePlaceholder = "\u{FFFC}"
-
-    var images: [ChapterInlineImage]
-
-    static func decode(_ data: Data?) -> ChapterRichContent? {
-        guard let data else { return nil }
-        return try? JSONDecoder().decode(ChapterRichContent.self, from: data)
-    }
-
-    func encoded() -> Data? {
-        try? JSONEncoder().encode(self)
-    }
-
-    func adjustingForReplacement(
-        range: NSRange,
-        replacementUTF16Length: Int
-    ) -> ChapterRichContent {
-        let delta = replacementUTF16Length - range.length
-        let replacedEnd = NSMaxRange(range)
-        let adjusted = images.compactMap { image -> ChapterInlineImage? in
-            if image.utf16Location < range.location { return image }
-            if image.utf16Location < replacedEnd { return nil }
-            var shifted = image
-            shifted.utf16Location += delta
-            return shifted
-        }
-        return ChapterRichContent(images: adjusted)
-    }
-
-    func containsImage(in range: NSRange) -> Bool {
-        let end = NSMaxRange(range)
-        return images.contains { image in
-            image.utf16Location < end
-                && image.utf16Location + 1 > range.location
-        }
-    }
 }
 
 struct ParsedBook: Sendable {

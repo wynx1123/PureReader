@@ -9,16 +9,12 @@ enum BookSourceImporter {
         var changed: Int
         var enabled: Int
         var disabled: Int
-        var skipped: Int
 
         var message: String {
-            let skippedNote = skipped > 0
-                ? String(localized: "，另有 \(skipped) 个条目格式无效已跳过")
-                : ""
             if disabled > 0 {
-                return String(localized: "已导入或更新 \(changed) 个书源，其中 \(enabled) 个可启用，\(disabled) 个因兼容性限制已停用") + skippedNote
+                return String(localized: "已导入或更新 \(changed) 个书源，其中 \(enabled) 个可启用，\(disabled) 个因兼容性限制已停用")
             }
-            return String(localized: "成功导入或更新 \(changed) 个书源") + skippedNote
+            return String(localized: "成功导入或更新 \(changed) 个书源")
         }
     }
 
@@ -27,11 +23,15 @@ enum BookSourceImporter {
     @MainActor
     static func importJSON(_ data: Data, into context: ModelContext) throws -> ImportResult {
         let data = normalizedJSONData(data)
-        guard let root = try? JSONSerialization.jsonObject(with: data) else {
+        let root = try JSONSerialization.jsonObject(with: data)
+        let objects: [[String: Any]]
+        if let array = root as? [[String: Any]] {
+            objects = array
+        } else if let object = root as? [String: Any] {
+            objects = [object]
+        } else {
             throw ImportError.invalidFormat
         }
-        let objects = sourceObjects(from: root)
-        guard !objects.isEmpty else { throw ImportError.invalidFormat }
 
         let candidates = objects.compactMap { try? parseOne($0) }
         guard !candidates.isEmpty else { throw ImportError.noValidSources }
@@ -73,8 +73,7 @@ enum BookSourceImporter {
             return ImportResult(
                 changed: changed,
                 enabled: candidates.filter { $0.enabled && $0.isValid }.count,
-                disabled: candidates.filter { !$0.enabled || !$0.isValid }.count,
-                skipped: objects.count - candidates.count
+                disabled: candidates.filter { !$0.enabled || !$0.isValid }.count
             )
         } catch {
             context.rollback()
@@ -84,8 +83,7 @@ enum BookSourceImporter {
 
     @MainActor
     static func importFromURL(_ url: URL, into context: ModelContext) async throws -> ImportResult {
-        let url = normalizedRemoteURL(url)
-        guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+        guard url.scheme?.lowercased() == "https" else {
             throw ImportError.invalidURL
         }
 
@@ -109,32 +107,30 @@ enum BookSourceImporter {
         return try importJSON(data, into: context)
     }
 
-    private static func normalizedRemoteURL(_ url: URL) -> URL {
-        guard url.host?.lowercased() == "github.com" else { return url }
-        let parts = url.pathComponents
-        guard parts.count >= 6, parts[3].lowercased() == "blob" else { return url }
-        var components = URLComponents()
-        components.scheme = "https"
-        components.host = "raw.githubusercontent.com"
-        let rawParts = [parts[1], parts[2]] + Array(parts.dropFirst(4))
-        components.path = "/" + rawParts.joined(separator: "/")
-        return components.url ?? url
-    }
-
     private static func download(_ request: URLRequest) async throws -> (Data, URLResponse) {
         var lastError: Error?
         for attempt in 0..<3 {
             do {
-                // 曾经用 URLSession.bytes 逐字节 append，对 10 MB 上限意味着上千万次
-                // 异步迭代，几 MB 的社区合集就会卡死界面。改为一次性下载 + 预检长度。
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (bytes, response) = try await URLSession.shared.bytes(for: request)
                 if let http = response as? HTTPURLResponse {
                     guard (200...299).contains(http.statusCode) else {
                         throw ImportError.httpStatus(http.statusCode)
                     }
+                    if let length = http.value(forHTTPHeaderField: "Content-Length"),
+                       let byteCount = Int(length), byteCount > maxDownloadBytes {
+                        throw ImportError.responseTooLarge
+                    }
                 }
-                guard data.count <= maxDownloadBytes else {
-                    throw ImportError.responseTooLarge
+
+                var data = Data()
+                data.reserveCapacity(min(response.expectedContentLength > 0
+                    ? Int(response.expectedContentLength)
+                    : 256 * 1024, maxDownloadBytes))
+                for try await byte in bytes {
+                    guard data.count < maxDownloadBytes else {
+                        throw ImportError.responseTooLarge
+                    }
+                    data.append(byte)
                 }
                 return (data, response)
             } catch is CancellationError {
@@ -168,32 +164,8 @@ enum BookSourceImporter {
         return text.data(using: .utf8) ?? bytes
     }
 
-    private static func sourceObjects(from root: Any) -> [[String: Any]] {
-        if let array = root as? [[String: Any]] { return array }
-        guard let object = root as? [String: Any] else { return [] }
-        if isSourceObject(object) { return [object] }
-        for key in ["bookSources", "bookSource", "sources", "data", "items"] {
-            if let array = object[key] as? [[String: Any]] { return array }
-            if let nested = object[key] as? [String: Any] {
-                let sources = sourceObjects(from: nested)
-                if !sources.isEmpty { return sources }
-            }
-        }
-        return []
-    }
-
-    private static func isSourceObject(_ object: [String: Any]) -> Bool {
-        object["bookSourceName"] != nil
-            || object["bookSourceUrl"] != nil
-            || object["searchUrl"] != nil
-            || object["searchURL"] != nil
-            || object["search_url"] != nil
-    }
-
     private static func identityKey(_ source: BookSource) -> String {
-        let base = sanitizedBaseURL(source.bookURL)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            .lowercased()
+        let base = sanitizedBaseURL(source.bookURL).lowercased()
         let fallback = source.searchURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         return source.formatRaw + "|" + (base.isEmpty ? source.name.lowercased() + "|" + fallback : base)
     }
@@ -202,13 +174,10 @@ enum BookSourceImporter {
         target.name = source.name
         target.groupName = source.groupName
         target.searchURL = source.searchURL
-        target.exploreURL = source.exploreURL
         target.bookURL = source.bookURL
         target.tocURL = source.tocURL
         target.contentURL = source.contentURL
-        target.headerJSON = source.headerJSON
         target.ruleJSON = source.ruleJSON
-        target.exploreRuleJSON = source.exploreRuleJSON
         target.enabled = source.enabled
         target.formatRaw = source.formatRaw
         target.isValid = source.isValid
@@ -219,7 +188,7 @@ enum BookSourceImporter {
     private static func sanitizedBaseURL(_ raw: String) -> String {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         let withoutMetadata = trimmed.components(separatedBy: "##").first ?? trimmed
-        return withoutMetadata.trimmingCharacters(in: .whitespacesAndNewlines)
+        return withoutMetadata.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
     }
 
     private static func compatibilityIssue(
@@ -230,10 +199,11 @@ enum BookSourceImporter {
         if lower.contains("@js:") || lower.contains("<js>") || lower.contains("</js>") {
             return String(localized: "包含 JavaScript 搜索逻辑")
         }
-        guard BookSourceEngine.canBuildSearchRequest(
-            raw: searchURL,
-            baseURL: sanitizedBaseURL(string(object, "bookSourceUrl") ?? "")
-        ) else {
+        if bool(object, "enabledCookieJar") == true,
+           lower.contains("webview") || lower.contains("startbrowser") {
+            return String(localized: "依赖 WebView/Cookie 验证")
+        }
+        guard requestDescriptor(searchURL, baseURL: sanitizedBaseURL(string(object, "bookSourceUrl") ?? "")) != nil else {
             return String(localized: "搜索请求格式暂不支持")
         }
 
@@ -243,16 +213,10 @@ enum BookSourceImporter {
               string(searchRules, "bookUrl") != nil else {
             return String(localized: "缺少搜索列表、书名或详情地址规则")
         }
-        // Only rules consumed by PureReader should decide whether search is usable.
-        // Legado sources often attach JavaScript to optional metadata such as kind
-        // or wordCount; disabling the whole source for unused fields hides otherwise
-        // valid name/author/book URL results (for example JSON API sources).
-        let consumedSearchKeys = ["bookList", "name", "author", "intro", "coverUrl", "bookUrl"]
-        let ruleValues = consumedSearchKeys.compactMap { string(searchRules, $0) }
+        let ruleValues = searchRules.values.compactMap { $0 as? String }
         if ruleValues.contains(where: {
-            let lowerRule = $0.lowercased()
-            return lowerRule.contains("@js:") || lowerRule.contains("<js>")
-                || lowerRule.contains("@put:") || lowerRule.contains("@get:")
+            $0.contains("@js:") || $0.contains("<js>")
+                || $0.contains("@put:") || $0.contains("@get:")
         }) {
             return String(localized: "解析规则包含 JavaScript")
         }
@@ -280,6 +244,26 @@ enum BookSourceImporter {
         return nil
     }
 
+    private static func requestDescriptor(_ raw: String, baseURL: String) -> (url: URL, method: String)? {
+        let path = raw.components(separatedBy: ",{").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let resolved: URL?
+        if let absolute = URL(string: path), absolute.scheme != nil {
+            resolved = absolute
+        } else if let base = URL(string: baseURL) {
+            resolved = URL(string: path, relativeTo: base)?.absoluteURL
+        } else {
+            resolved = nil
+        }
+        guard let url = resolved, ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+            return nil
+        }
+        let method = raw.range(of: #"['\"]method['\"]\s*:\s*['\"]post['\"]"#, options: [.regularExpression, .caseInsensitive]) == nil
+            ? "GET"
+            : "POST"
+        return (url, method)
+    }
+
     private static func appendCompatibilityNote(_ comment: String, issue: String) -> String {
         let note = String(localized: "PureReader 暂不兼容：\(issue)。该书源已自动停用。")
         return comment.isEmpty ? note : comment + "\n\n" + note
@@ -296,17 +280,14 @@ enum BookSourceImporter {
                 "name": s.name,
                 "group": s.groupName,
                 "searchUrl": s.searchURL,
-                "exploreUrl": s.exploreURL,
                 "bookUrl": s.bookURL,
                 "tocUrl": s.tocURL,
                 "contentUrl": s.contentURL,
-                "header": s.headerJSON,
                 "enabled": s.enabled,
                 "format": s.format.rawValue,
                 "comment": s.comment,
                 "weight": s.weight,
                 "ruleSearch": ruleDict(s.rules, kind: .search),
-                "ruleExplore": ruleDict(s.exploreRules, kind: .search),
                 "ruleBookInfo": ruleDict(s.rules, kind: .info),
                 "ruleToc": ruleDict(s.rules, kind: .toc),
                 "ruleContent": ruleDict(s.rules, kind: .content)
@@ -381,10 +362,9 @@ enum BookSourceImporter {
             throw ImportError.invalidFormat
         }
         let group = string(obj, "bookSourceGroup") ?? string(obj, "group") ?? ""
-        let search = string(obj, "searchUrl") ?? string(obj, "searchURL") ?? ""
-        let explore = string(obj, "exploreUrl") ?? string(obj, "exploreURL") ?? ""
+        let search = string(obj, "searchUrl") ?? ""
         let baseURL = sanitizedBaseURL(string(obj, "bookSourceUrl") ?? "")
-        guard !search.isEmpty else { throw ImportError.invalidFormat }
+        guard !search.isEmpty, !baseURL.isEmpty else { throw ImportError.invalidFormat }
         let comment = string(obj, "bookSourceComment") ?? string(obj, "comment") ?? ""
         let compatibility = compatibilityIssue(searchURL: search, object: obj)
         let readingIssue = readingCompatibilityIssue(obj)
@@ -399,17 +379,6 @@ enum BookSourceImporter {
             rules.intro = string(rs, "intro")
             rules.coverUrl = string(rs, "coverUrl")
             rules.bookUrl = string(rs, "bookUrl")
-        }
-        var exploreRules: ParseRule?
-        if let re = obj["ruleExplore"] as? [String: Any] {
-            exploreRules = ParseRule(
-                bookList: string(re, "bookList"),
-                name: string(re, "name"),
-                author: string(re, "author"),
-                intro: string(re, "intro"),
-                coverUrl: string(re, "coverUrl"),
-                bookUrl: string(re, "bookUrl")
-            )
         }
         if let ri = obj["ruleBookInfo"] as? [String: Any] {
             rules.tocUrl = string(ri, "tocUrl") ?? rules.tocUrl
@@ -433,13 +402,10 @@ enum BookSourceImporter {
             name: name,
             groupName: group,
             searchURL: search,
-            exploreURL: explore,
             bookURL: baseURL,
             tocURL: "",
             contentURL: "",
-            headerJSON: headerStorageString(obj["header"]),
             rules: rules,
-            exploreRules: exploreRules,
             enabled: enabled,
             format: .legado,
             comment: compatibility.map { appendCompatibilityNote(comment, issue: $0) }
@@ -457,7 +423,6 @@ enum BookSourceImporter {
         }
         let host = string(obj, "host") ?? ""
         let search = string(obj, "search_url") ?? string(obj, "searchUrl") ?? (host + "/search?q={{key}}")
-        let explore = string(obj, "explore_url") ?? string(obj, "exploreUrl") ?? ""
         var rules = ParseRule()
         rules.bookList = string(obj, "search_list") ?? string(obj, "bookList")
         rules.name = string(obj, "search_name") ?? string(obj, "name_rule")
@@ -472,8 +437,6 @@ enum BookSourceImporter {
             name: name,
             groupName: string(obj, "group") ?? "爱阅记",
             searchURL: search,
-            exploreURL: explore,
-            headerJSON: headerStorageString(obj["header"] ?? obj["headers"]),
             rules: rules,
             enabled: bool(obj, "enabled") ?? true,
             format: .aiYueJi,
@@ -517,11 +480,6 @@ enum BookSourceImporter {
             rules.content = string(obj, "contentRule")
         }
         let searchURL = string(obj, "searchUrl") ?? string(obj, "searchURL") ?? ""
-        let exploreURL = string(obj, "exploreUrl") ?? string(obj, "exploreURL") ?? ""
-        var exploreRules: ParseRule?
-        if let explore = obj["ruleExplore"] as? [String: Any] {
-            exploreRules = rulesFromDict(explore)
-        }
         guard !searchURL.isEmpty, rules.name != nil, rules.bookUrl != nil else {
             throw ImportError.invalidFormat
         }
@@ -529,13 +487,10 @@ enum BookSourceImporter {
             name: name,
             groupName: string(obj, "group") ?? "",
             searchURL: searchURL,
-            exploreURL: exploreURL,
             bookURL: string(obj, "bookUrl") ?? "",
             tocURL: string(obj, "tocUrl") ?? "",
             contentURL: string(obj, "contentUrl") ?? "",
-            headerJSON: headerStorageString(obj["header"] ?? obj["headers"]),
             rules: rules,
-            exploreRules: exploreRules,
             enabled: bool(obj, "enabled") ?? true,
             format: .pureReader,
             comment: string(obj, "comment") ?? "",
@@ -591,17 +546,6 @@ enum BookSourceImporter {
         )
     }
 
-    private static func headerStorageString(_ value: Any?) -> String {
-        if let text = value as? String { return text }
-        guard let value,
-              JSONSerialization.isValidJSONObject(value),
-              let data = try? JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]),
-              let text = String(data: data, encoding: .utf8) else {
-            return ""
-        }
-        return text
-    }
-
     private static func compact(_ dict: [String: String?]) -> [String: Any] {
         var out: [String: Any] = [:]
         for (k, v) in dict {
@@ -649,7 +593,7 @@ enum BookSourceImporter {
             case .noValidSources:
                 return String(localized: "JSON 中没有可导入的有效书源")
             case .invalidURL:
-                return String(localized: "书源地址无效，仅支持 HTTP 或 HTTPS")
+                return String(localized: "书源地址无效，仅支持 HTTPS")
             case .invalidResponse:
                 return String(localized: "书源服务器返回了无效响应")
             case .httpStatus(let code):

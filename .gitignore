@@ -30,5 +30,3 @@ AuthKey_*.p8
 .env.*
 tmp/
 .temp/
-
-build-output/

@@ -13,8 +13,7 @@ struct PureReaderApp: App {
             ReadingSettings.self,
             ShelfPreferences.self,
             RewriteRecord.self,
-            BookSource.self,
-            Bookmark.self
+            BookSource.self
         ])
         let config = ModelConfiguration(
             "PureReader",

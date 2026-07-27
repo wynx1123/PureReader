@@ -351,7 +351,14 @@ enum BookSourceImporter {
             weight: 0
         )
         context.insert(demo)
-        try? context.save()
+        do {
+            try context.save()
+        } catch {
+            context.delete(demo)
+            // Demo installation is optional, but persistence failures must remain
+            // visible to diagnostics instead of being silently swallowed.
+            assertionFailure("Failed to persist demo book source: \(error)")
+        }
     }
 
     // MARK: - Parse one

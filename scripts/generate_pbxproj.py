@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "PureReader"
+TESTS = ROOT / "PureReaderTests"
 PROJ = ROOT / "PureReader.xcodeproj"
 OUT = PROJ / "project.pbxproj"
 
@@ -17,7 +20,7 @@ OUT = PROJ / "project.pbxproj"
 BUNDLE_ID = "com.wynx.PureReader"
 DISPLAY_NAME = "纯享阅读"
 DEPLOY = "17.0"
-MARKETING = "1.0"
+MARKETING = "1.1"
 BUILD = "1"
 
 
@@ -25,8 +28,9 @@ def uid(key: str) -> str:
     return hashlib.md5(key.encode()).hexdigest()[:24].upper()
 
 
-def main() -> None:
+def main(output: Path = OUT) -> None:
     swift_files = sorted(SRC.rglob("*.swift"))
+    test_files = sorted(TESTS.rglob("*.swift")) if TESTS.is_dir() else []
     assert swift_files, "no swift files"
     assets = SRC / "Resources" / "Assets.xcassets"
     assert assets.is_dir()
@@ -38,6 +42,13 @@ def main() -> None:
     resources_phase = uid("RESOURCES")
     frameworks_phase = uid("FRAMEWORKS")
     product_ref = uid("PRODUCT_REF")
+    test_target_id = uid("TEST_TARGET")
+    test_sources_phase = uid("TEST_SOURCES")
+    test_frameworks_phase = uid("TEST_FRAMEWORKS")
+    test_product_ref = uid("TEST_PRODUCT_REF")
+    test_group = uid("TEST_GROUP")
+    test_dependency = uid("TEST_DEPENDENCY")
+    test_proxy = uid("TEST_PROXY")
     main_group = uid("MAIN_GROUP")
     products_group = uid("PRODUCTS_GROUP")
     src_root_group = uid("SRC_ROOT_GROUP")
@@ -47,6 +58,9 @@ def main() -> None:
     conf_proj_release = uid("CONF_PROJ_RELEASE")
     conf_tgt_debug = uid("CONF_TGT_DEBUG")
     conf_tgt_release = uid("CONF_TGT_RELEASE")
+    conf_list_test = uid("CONFLIST_TEST")
+    conf_test_debug = uid("CONF_TEST_DEBUG")
+    conf_test_release = uid("CONF_TEST_RELEASE")
 
     # Build file / file ref for each swift
     file_entries: list[tuple[str, Path, str, str]] = []  # name, path, file_ref, build_file
@@ -56,6 +70,11 @@ def main() -> None:
         fr = uid(f"FR:{rel}")
         bf = uid(f"BF:{rel}")
         file_entries.append((name, p.relative_to(SRC), fr, bf))
+
+    test_entries: list[tuple[str, Path, str, str]] = []
+    for p in test_files:
+        rel = p.relative_to(TESTS).as_posix()
+        test_entries.append((p.name, p.relative_to(TESTS), uid(f"TEST_FR:{rel}"), uid(f"TEST_BF:{rel}")))
 
     assets_fr = uid("FR:Assets.xcassets")
     assets_bf = uid("BF:Assets.xcassets")
@@ -74,6 +93,8 @@ def main() -> None:
     w("/* Begin PBXBuildFile section */")
     for name, rel, fr, bf in file_entries:
         w(f"\t\t{bf} /* {name} in Sources */ = {{isa = PBXBuildFile; fileRef = {fr} /* {name} */; }};")
+    for name, rel, fr, bf in test_entries:
+        w(f"\t\t{bf} /* {name} in Sources */ = {{isa = PBXBuildFile; fileRef = {fr} /* {name} */; }};")
     w(f"\t\t{assets_bf} /* Assets.xcassets in Resources */ = {{isa = PBXBuildFile; fileRef = {assets_fr} /* Assets.xcassets */; }};")
     w("/* End PBXBuildFile section */")
 
@@ -82,11 +103,14 @@ def main() -> None:
     w(
         f'\t\t{product_ref} /* PureReader.app */ = {{isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = PureReader.app; sourceTree = BUILT_PRODUCTS_DIR; }};'
     )
+    w(f'\t\t{test_product_ref} /* PureReaderTests.xctest */ = {{isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PureReaderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; }};')
     for name, rel, fr, bf in file_entries:
         quoted = name if all(c.isalnum() or c in "._-" for c in name) else f'"{name}"'
         w(
             f'\t\t{fr} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = {quoted}; sourceTree = "<group>"; }};'
         )
+    for name, rel, fr, bf in test_entries:
+        w(f'\t\t{fr} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = {name}; sourceTree = "<group>"; }};')
     w(
         f'\t\t{assets_fr} /* Assets.xcassets */ = {{isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; }};'
     )
@@ -129,6 +153,7 @@ def main() -> None:
     w("\t\t\tisa = PBXGroup;")
     w("\t\t\tchildren = (")
     w(f"\t\t\t\t{src_root_group} /* PureReader */,")
+    w(f"\t\t\t\t{test_group} /* PureReaderTests */,")
     w(f"\t\t\t\t{products_group} /* Products */,")
     w("\t\t\t);")
     w('\t\t\tsourceTree = "<group>";')
@@ -137,8 +162,18 @@ def main() -> None:
     w("\t\t\tisa = PBXGroup;")
     w("\t\t\tchildren = (")
     w(f"\t\t\t\t{product_ref} /* PureReader.app */,")
+    w(f"\t\t\t\t{test_product_ref} /* PureReaderTests.xctest */,")
     w("\t\t\t);")
     w("\t\t\tname = Products;")
+    w('\t\t\tsourceTree = "<group>";')
+    w("\t\t};")
+    w(f"\t\t{test_group} /* PureReaderTests */ = {{")
+    w("\t\t\tisa = PBXGroup;")
+    w("\t\t\tchildren = (")
+    for name, rel, fr, bf in test_entries:
+        w(f"\t\t\t\t{fr} /* {name} */,")
+    w("\t\t\t);")
+    w("\t\t\tpath = PureReaderTests;")
     w('\t\t\tsourceTree = "<group>";')
     w("\t\t};")
 
@@ -190,7 +225,28 @@ def main() -> None:
     w(f"\t\t\tproductReference = {product_ref} /* PureReader.app */;")
     w('\t\t\tproductType = "com.apple.product-type.application";')
     w("\t\t};")
+    w(f"\t\t{test_target_id} /* PureReaderTests */ = {{")
+    w("\t\t\tisa = PBXNativeTarget;")
+    w(f"\t\t\tbuildConfigurationList = {conf_list_test} /* Build configuration list for PBXNativeTarget \"PureReaderTests\" */;")
+    w("\t\t\tbuildPhases = (")
+    w(f"\t\t\t\t{test_sources_phase} /* Sources */,")
+    w(f"\t\t\t\t{test_frameworks_phase} /* Frameworks */,")
+    w("\t\t\t);")
+    w("\t\t\tbuildRules = ();")
+    w(f"\t\t\tdependencies = ({test_dependency} /* PBXTargetDependency */,);")
+    w("\t\t\tname = PureReaderTests;")
+    w("\t\t\tproductName = PureReaderTests;")
+    w(f"\t\t\tproductReference = {test_product_ref} /* PureReaderTests.xctest */;")
+    w('\t\t\tproductType = "com.apple.product-type.bundle.unit-test";')
+    w("\t\t};")
     w("/* End PBXNativeTarget section */")
+
+    w("/* Begin PBXContainerItemProxy section */")
+    w(f"\t\t{test_proxy} = {{isa = PBXContainerItemProxy; containerPortal = {project_id}; proxyType = 1; remoteGlobalIDString = {target_id}; remoteInfo = PureReader; }};")
+    w("/* End PBXContainerItemProxy section */")
+    w("/* Begin PBXTargetDependency section */")
+    w(f"\t\t{test_dependency} = {{isa = PBXTargetDependency; target = {target_id}; targetProxy = {test_proxy}; }};")
+    w("/* End PBXTargetDependency section */")
 
     # Project
     w("/* Begin PBXProject section */")
@@ -216,6 +272,7 @@ def main() -> None:
     w('\t\t\tprojectRoot = "";')
     w("\t\t\ttargets = (")
     w(f"\t\t\t\t{target_id} /* PureReader */,")
+    w(f"\t\t\t\t{test_target_id} /* PureReaderTests */,")
     w("\t\t\t);")
     w("\t\t};")
     w("/* End PBXProject section */")
@@ -231,6 +288,12 @@ def main() -> None:
     w("\t\t\t);")
     w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
     w("\t\t};")
+    w(f"\t\t{test_sources_phase} /* Sources */ = {{")
+    w("\t\t\tisa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (")
+    for name, rel, fr, bf in test_entries:
+        w(f"\t\t\t\t{bf} /* {name} in Sources */,")
+    w("\t\t\t); runOnlyForDeploymentPostprocessing = 0;")
+    w("\t\t};")
     w("/* End PBXSourcesBuildPhase section */")
 
     # Frameworks empty
@@ -242,6 +305,7 @@ def main() -> None:
     w("\t\t\t);")
     w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
     w("\t\t};")
+    w(f"\t\t{test_frameworks_phase} /* Frameworks */ = {{isa = PBXFrameworksBuildPhase; buildActionMask = 2147483647; files = (); runOnlyForDeploymentPostprocessing = 0; }};")
     w("/* End PBXFrameworksBuildPhase section */")
 
     # Resources
@@ -329,6 +393,22 @@ def main() -> None:
         w("\t\t\t};")
         w(f"\t\t\tname = {name};")
         w("\t\t};")
+    test_common = f"""
+                BUNDLE_LOADER = "$(TEST_HOST)";
+                CODE_SIGNING_ALLOWED = NO;
+                GENERATE_INFOPLIST_FILE = YES;
+                IPHONEOS_DEPLOYMENT_TARGET = {DEPLOY};
+                PRODUCT_BUNDLE_IDENTIFIER = {BUNDLE_ID}.Tests;
+                PRODUCT_NAME = "$(TARGET_NAME)";
+                SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+                SWIFT_VERSION = 5.0;
+                TARGETED_DEVICE_FAMILY = "1,2";
+                TEST_HOST = "$(BUILT_PRODUCTS_DIR)/PureReader.app/PureReader";
+"""
+    for conf_id, name in [(conf_test_debug, "Debug"), (conf_test_release, "Release")]:
+        w(f"\t\t{conf_id} /* {name} */ = {{isa = XCBuildConfiguration; buildSettings = {{")
+        for line in test_common.strip("\n").splitlines(): w(line)
+        w(f"\t\t}}; name = {name}; }};")
     w("/* End XCBuildConfiguration section */")
 
     # Config lists
@@ -351,6 +431,11 @@ def main() -> None:
     w("\t\t\tdefaultConfigurationIsVisible = 0;")
     w('\t\t\tdefaultConfigurationName = Release;')
     w("\t\t};")
+    w(f'\t\t{conf_list_test} /* Build configuration list for PBXNativeTarget "PureReaderTests" */ = {{')
+    w("\t\t\tisa = XCConfigurationList;")
+    w(f"\t\t\tbuildConfigurations = ({conf_test_debug} /* Debug */, {conf_test_release} /* Release */,);")
+    w("\t\t\tdefaultConfigurationIsVisible = 0; defaultConfigurationName = Release;")
+    w("\t\t};")
     w("/* End XCConfigurationList section */")
 
     w("\t};")
@@ -358,11 +443,20 @@ def main() -> None:
     w("}")
 
     PROJ.mkdir(parents=True, exist_ok=True)
-    OUT.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"Wrote {OUT} with {len(swift_files)} swift sources")
+    output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    print(f"Wrote {output} with {len(swift_files)} app and {len(test_files)} test sources")
     for p in swift_files:
         print(" ", p.relative_to(ROOT))
 
 
 if __name__ == "__main__":
-    main()
+    if "--check" in sys.argv:
+        with tempfile.TemporaryDirectory() as tmp:
+            candidate = Path(tmp) / "project.pbxproj"
+            main(candidate)
+            if not OUT.exists() or candidate.read_bytes() != OUT.read_bytes():
+                print("project.pbxproj is stale; run scripts/generate_pbxproj.py", file=sys.stderr)
+                raise SystemExit(1)
+        print("project.pbxproj is up to date")
+    else:
+        main()

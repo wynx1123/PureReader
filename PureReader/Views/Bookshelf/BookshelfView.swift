@@ -177,15 +177,52 @@ struct BookshelfView: View {
             } message: {
                 Text(importAlertMessage)
             }
+            .alert(
+                String(localized: "网络书籍"),
+                isPresented: Binding(
+                    get: { viewModel.onlineOperationError != nil },
+                    set: { if !$0 { viewModel.onlineOperationError = nil } }
+                )
+            ) { Button(String(localized: "好"), role: .cancel) {} } message: {
+                Text(viewModel.onlineOperationError ?? "")
+            }
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if viewModel.isImporting {
-                    ImportProgressBanner(
-                        title: viewModel.importProgressText ?? String(localized: "正在导入…"),
-                        detail: viewModel.importProgressDetail ?? ""
-                    )
-                    .padding(.horizontal, 12)
-                    .padding(.bottom, 8)
+                VStack(spacing: 6) {
+                    if viewModel.isImporting {
+                        ImportProgressBanner(
+                            title: viewModel.importProgressText ?? String(localized: "正在导入…"),
+                            detail: viewModel.importProgressDetail ?? ""
+                        )
+                        .padding(.horizontal, 12)
+                    }
+                    if let bookID = viewModel.downloadingBookID {
+                        HStack(spacing: 10) {
+                            ProgressView(value: Double(viewModel.downloadCompleted), total: Double(max(1, viewModel.downloadTotal)))
+                            Text("\(viewModel.downloadCompleted)/\(viewModel.downloadTotal)").font(.caption.monospacedDigit())
+                            Button(String(localized: "取消")) { viewModel.cancelDownload() }
+                        }
+                        .padding(12).background(.regularMaterial, in: Capsule())
+                        .padding(.horizontal, 12)
+                        .accessibilityLabel("\(bookID.uuidString)，离线下载进度")
+                    }
+                    if let status = viewModel.updateStatusMessage {
+                        HStack(spacing: 10) {
+                            Image(systemName: "checkmark.circle.fill").foregroundStyle(.green)
+                            Text(status).font(.callout).lineLimit(2)
+                            Spacer(minLength: 0)
+                            Button {
+                                viewModel.updateStatusMessage = nil
+                            } label: {
+                                Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                            }
+                            .accessibilityLabel(String(localized: "关闭提示"))
+                        }
+                        .padding(12)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+                        .padding(.horizontal, 12)
+                    }
                 }
+                .padding(.bottom, 8)
             }
             .overlay {
                 if viewModel.isImporting {
@@ -414,6 +451,32 @@ struct BookshelfView: View {
         } label: {
             Label(String(localized: "编辑"), systemImage: "pencil")
         }
+        if book.format == .online {
+            Divider()
+            Button { Task { await viewModel.checkUpdates(for: book, context: modelContext) } } label: {
+                Label(String(localized: "检查更新"), systemImage: "arrow.clockwise")
+            }
+            Button { viewModel.downloadCurrentChapter(for: book, context: modelContext) } label: {
+                Label(String(localized: "下载当前章"), systemImage: "arrow.down.circle")
+            }
+            Button { viewModel.downloadNextTwenty(for: book, context: modelContext) } label: {
+                Label(String(localized: "下载后 20 章"), systemImage: "arrow.down.to.line.compact")
+            }
+            Button { viewModel.downloadWholeBook(for: book, context: modelContext) } label: {
+                Label(String(localized: "下载全书"), systemImage: "square.and.arrow.down")
+            }
+            Button { viewModel.clearOfflineCache(for: book, context: modelContext) } label: {
+                Label(String(localized: "清除离线缓存"), systemImage: "externaldrive.badge.xmark")
+            }
+            Button {
+                viewModel.setTracking(!book.updateTrackingEnabled, for: book, context: modelContext)
+            } label: {
+                Label(
+                    book.updateTrackingEnabled ? String(localized: "关闭追更") : String(localized: "开启追更"),
+                    systemImage: book.updateTrackingEnabled ? "bell.slash" : "bell"
+                )
+            }
+        }
         Button {
             do {
                 let url = try BookImportService.exportTXT(book: book)
@@ -478,6 +541,16 @@ struct BookshelfView: View {
                     .contentShape(Rectangle())
             }
             .accessibilityLabel(String(localized: "添加书籍"))
+        }
+        ToolbarItem(placement: .topBarTrailing) {
+            Button {
+                Task { await viewModel.checkAllUpdates(books: books, context: modelContext) }
+            } label: {
+                if viewModel.isCheckingUpdates { ProgressView() }
+                else { Image(systemName: "arrow.clockwise") }
+            }
+            .disabled(viewModel.isCheckingUpdates)
+            .accessibilityLabel(String(localized: "检查网络书籍更新"))
         }
     }
 }

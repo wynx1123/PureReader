@@ -1,6 +1,7 @@
 import SwiftUI
 import SwiftData
 import UniformTypeIdentifiers
+import UIKit
 
 /// 整库备份与恢复。
 ///
@@ -38,12 +39,16 @@ struct BackupView: View {
         .allowsHitTesting(!isBusy)
         .task { refreshOverview() }
         .onChange(of: includeCovers) { _, _ in refreshOverview() }
-        .fileImporter(
-            isPresented: $showImporter,
-            allowedContentTypes: BackupService.allowedContentTypes,
-            allowsMultipleSelection: false
-        ) { result in
-            handlePickedBackup(result)
+        .sheet(isPresented: $showImporter) {
+            BackupDocumentPicker(
+                allowedContentTypes: BackupService.allowedContentTypes,
+                onPick: { urls in
+                    showImporter = false
+                    handlePickedBackup(.success(urls))
+                },
+                onCancel: { showImporter = false }
+            )
+            .ignoresSafeArea()
         }
         .sheet(isPresented: $showShareSheet) {
             if let backupFile {
@@ -451,6 +456,53 @@ private struct RestoreOptionsSheet: View {
             }
         }
         .frame(minHeight: 44)
+    }
+}
+
+private struct BackupDocumentPicker: UIViewControllerRepresentable {
+    let allowedContentTypes: [UTType]
+    let onPick: ([URL]) -> Void
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onPick: onPick, onCancel: onCancel)
+    }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(
+            forOpeningContentTypes: allowedContentTypes,
+            asCopy: true
+        )
+        picker.allowsMultipleSelection = false
+        picker.shouldShowFileExtensions = true
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(
+        _ uiViewController: UIDocumentPickerViewController,
+        context: Context
+    ) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onPick: ([URL]) -> Void
+        let onCancel: () -> Void
+
+        init(onPick: @escaping ([URL]) -> Void, onCancel: @escaping () -> Void) {
+            self.onPick = onPick
+            self.onCancel = onCancel
+        }
+
+        func documentPicker(
+            _ controller: UIDocumentPickerViewController,
+            didPickDocumentsAt urls: [URL]
+        ) {
+            onPick(urls)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onCancel()
+        }
     }
 }
 

@@ -2,8 +2,10 @@ import Foundation
 import SwiftData
 
 struct BookSourceSearchFailure: Sendable {
+    var sourceID: UUID
     var sourceName: String
     var reason: String
+    var verificationURL: URL? = nil
 }
 
 struct BookSourceSearchReport: Sendable {
@@ -26,22 +28,26 @@ struct BookSourceSnapshot: Sendable {
     var id: UUID
     var name: String
     var searchURL: String
+    var exploreURL: String
     var bookURL: String
     var tocURL: String
     var contentURL: String
     var headerJSON: String
     var rules: ParseRule
+    var exploreRules: ParseRule
 
     @MainActor
     init(_ source: BookSource) {
         id = source.id
         name = source.name
         searchURL = source.searchURL
+        exploreURL = source.exploreURL
         bookURL = source.bookURL
         tocURL = source.tocURL
         contentURL = source.contentURL
         headerJSON = source.headerJSON
         rules = source.rules
+        exploreRules = source.exploreRules
     }
 }
 
@@ -104,8 +110,10 @@ enum BookSourceEngine {
                         return SearchBatch(
                             results: [],
                             failure: BookSourceSearchFailure(
+                                sourceID: source.id,
                                 sourceName: source.name,
-                                reason: error.localizedDescription
+                                reason: error.localizedDescription,
+                                verificationURL: verificationURL(from: error)
                             )
                         )
                     }
@@ -216,6 +224,120 @@ enum BookSourceEngine {
             ))
         }
         return out
+    }
+
+    // MARK: - Discover / categories
+
+    static func exploreCategories(snapshots: [BookSourceSnapshot]) -> [SourceExploreCategory] {
+        var categories: [SourceExploreCategory] = []
+        var seen = Set<String>()
+        for source in snapshots where !source.exploreURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            for entry in parseExploreEntries(source.exploreURL, baseURL: source.bookURL) {
+                let key = source.id.uuidString + "|" + entry.title + "|" + entry.url
+                guard seen.insert(key).inserted else { continue }
+                categories.append(SourceExploreCategory(
+                    title: entry.title,
+                    url: entry.url,
+                    sourceID: source.id,
+                    sourceName: source.name
+                ))
+            }
+        }
+        return categories
+    }
+
+    static func discover(
+        categories: [SourceExploreCategory],
+        snapshots: [BookSourceSnapshot],
+        page: Int = 1
+    ) async -> BookSourceSearchReport {
+        let sourceByID = Dictionary(snapshots.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let usable = categories.compactMap { category -> (SourceExploreCategory, BookSourceSnapshot)? in
+            guard let source = sourceByID[category.sourceID] else { return nil }
+            return (category, source)
+        }
+        guard !usable.isEmpty else {
+            return BookSourceSearchReport(results: [], attemptedCount: 0, failures: [])
+        }
+
+        return await withTaskGroup(of: SearchBatch.self) { group in
+            for (category, source) in usable {
+                group.addTask {
+                    do {
+                        var exploreSource = source
+                        exploreSource.searchURL = category.url
+                        exploreSource.rules = source.exploreRules
+                        return SearchBatch(
+                            results: try await searchOne(keyword: "", source: exploreSource, page: page),
+                            failure: nil
+                        )
+                    } catch is CancellationError {
+                        return SearchBatch(results: [], failure: nil)
+                    } catch {
+                        return SearchBatch(
+                            results: [],
+                            failure: BookSourceSearchFailure(
+                                sourceID: source.id,
+                                sourceName: source.name,
+                                reason: error.localizedDescription,
+                                verificationURL: verificationURL(from: error)
+                            )
+                        )
+                    }
+                }
+            }
+            var all: [SourceSearchResult] = []
+            var failures: [BookSourceSearchFailure] = []
+            for await batch in group {
+                all.append(contentsOf: batch.results)
+                if let failure = batch.failure { failures.append(failure) }
+            }
+            var seen = Set<String>()
+            let unique = all.filter { seen.insert($0.name + "|" + $0.author).inserted }
+            return BookSourceSearchReport(
+                results: unique,
+                attemptedCount: usable.count,
+                failures: failures.sorted { $0.sourceName < $1.sourceName }
+            )
+        }
+    }
+
+    private static func parseExploreEntries(
+        _ raw: String,
+        baseURL: String
+    ) -> [(title: String, url: String)] {
+        let normalized = raw
+            .replacingOccurrences(of: "\r\n", with: "&&")
+            .replacingOccurrences(of: "\n", with: "&&")
+        let parts = normalized.components(separatedBy: "&&")
+        var output: [(String, String)] = []
+        for (offset, part) in parts.enumerated() {
+            let item = part.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !item.isEmpty else { continue }
+            let title: String
+            let path: String
+            if let separator = item.range(of: "::") {
+                title = String(item[..<separator.lowerBound])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                path = String(item[separator.upperBound...])
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                title = offset == 0 ? String(localized: "推荐") : String(localized: "分类 \(offset + 1)")
+                path = item
+            }
+            guard !path.isEmpty else { continue }
+            let resolved: String
+            if let url = URL(string: path), url.scheme != nil {
+                resolved = path
+            } else if let base = URL(string: baseURL.hasSuffix("/") ? baseURL : baseURL + "/"),
+                      let absolute = URL(string: path, relativeTo: base)?.absoluteURL {
+                resolved = absolute.absoluteString
+            } else {
+                continue
+            }
+            output.append((title.isEmpty ? String(localized: "推荐") : title, resolved))
+        }
+        return output
     }
 
     // MARK: - TOC
@@ -360,6 +482,9 @@ enum BookSourceEngine {
                 var request = initialRequest
                 request.timeoutInterval = 15
                 let (data, response) = try await session.data(for: request)
+                if verificationChallenge(data: data, response: response, fallbackURL: request.url) {
+                    throw BookSourceError.verificationRequired(response.url ?? request.url!)
+                }
                 if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
                     throw BookSourceError.httpStatus(http.statusCode)
                 }
@@ -377,6 +502,28 @@ enum BookSourceEngine {
             }
         }
         throw lastError
+    }
+
+    private static func verificationURL(from error: Error) -> URL? {
+        guard case BookSourceError.verificationRequired(let url) = error else { return nil }
+        return url
+    }
+
+    private static func verificationChallenge(
+        data: Data,
+        response: URLResponse,
+        fallbackURL: URL?
+    ) -> Bool {
+        if let http = response as? HTTPURLResponse, [401, 403, 429].contains(http.statusCode) {
+            return true
+        }
+        let sample = data.prefix(64 * 1024)
+        let text = String(decoding: sample, as: UTF8.self).lowercased()
+        let markers = [
+            "captcha", "cf-chl-", "challenge-platform", "verify you are human",
+            "geetest", "__jsl_clearance", "\u{4eba}\u{673a}\u{9a8c}\u{8bc1}", "\u{6ed1}\u{52a8}\u{9a8c}\u{8bc1}", "\u{8bbf}\u{95ee}\u{9a8c}\u{8bc1}", "\u{5b89}\u{5168}\u{9a8c}\u{8bc1}"
+        ]
+        return markers.contains { text.contains($0) } && (response.url ?? fallbackURL) != nil
     }
 
     static func canBuildSearchRequest(raw: String, baseURL: String) -> Bool {
@@ -737,6 +884,7 @@ enum BookSourceError: LocalizedError {
     case httpStatus(Int)
     case empty
     case unsupportedRequest
+    case verificationRequired(URL)
 
     var errorDescription: String? {
         switch self {
@@ -745,6 +893,7 @@ enum BookSourceError: LocalizedError {
         case .httpStatus(let c): return String(localized: "HTTP \(c)")
         case .empty: return String(localized: "无结果")
         case .unsupportedRequest: return String(localized: "该书源的请求格式暂不支持")
+        case .verificationRequired: return String(localized: "\u{8be5}\u{4e66}\u{6e90}\u{9700}\u{8981}\u{5148}\u{5b8c}\u{6210}\u{4eba}\u{673a}\u{9a8c}\u{8bc1}")
         }
     }
 }

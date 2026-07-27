@@ -11,6 +11,8 @@ final class Book {
     var sourceTypeRaw: String
     var sourceName: String?
     var sourceURL: String?
+    /// ID of the online source used for lazy chapter downloads.
+    var bookSourceID: UUID? = nil
     /// App 沙盒内相对路径（Books/<uuid>/...）
     var filePath: String?
     var formatRaw: String
@@ -60,6 +62,7 @@ final class Book {
         sourceType: SourceType = .local,
         sourceName: String? = nil,
         sourceURL: String? = nil,
+        bookSourceID: UUID? = nil,
         filePath: String? = nil,
         format: BookFormat = .txt,
         totalChapters: Int = 0,
@@ -79,6 +82,7 @@ final class Book {
         self.sourceTypeRaw = sourceType.rawValue
         self.sourceName = sourceName
         self.sourceURL = sourceURL
+        self.bookSourceID = bookSourceID
         self.filePath = filePath
         self.formatRaw = format.rawValue
         self.totalChapters = totalChapters
@@ -102,6 +106,8 @@ final class Chapter {
     @Attribute(.externalStorage) var content: String
     /// EPUB 正文图片的位置与原始数据。
     @Attribute(.externalStorage) var richContentData: Data?
+    /// Original online chapter URL used for on-demand content loading.
+    var sourceURL: String? = nil
     var book: Book?
 
     init(
@@ -109,13 +115,15 @@ final class Chapter {
         index: Int,
         title: String,
         content: String = "",
-        richContentData: Data? = nil
+        richContentData: Data? = nil,
+        sourceURL: String? = nil
     ) {
         self.id = id
         self.index = index
         self.title = title
         self.content = content
         self.richContentData = richContentData
+        self.sourceURL = sourceURL
     }
 }
 

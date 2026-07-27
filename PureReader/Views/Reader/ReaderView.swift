@@ -26,6 +26,7 @@ struct ReaderView: View {
     @State private var curlIndex: Int = 0
     @State private var verticalPageID: BookPageID?
     @State private var showBookmarks = false
+    @State private var chapterListReversed = false
 
     init(session: ReaderSession) {
         self._viewModel = Bindable(session.viewModel)
@@ -85,6 +86,20 @@ struct ReaderView: View {
         .sheet(isPresented: $viewModel.showChapterList) {
             chapterListSheet
         }
+        .sheet(item: $viewModel.verificationRequest) { request in
+            if let source = viewModel.verificationSource {
+                BookSourceVerificationView(
+                    request: request,
+                    headerJSON: source.headerJSON,
+                    onComplete: { cookie in viewModel.saveVerificationCookies(cookie) }
+                )
+            } else {
+                ContentUnavailableView(
+                    String(localized: "\u{4e66}\u{6e90}\u{5df2}\u{4e0d}\u{5b58}\u{5728}"),
+                    systemImage: "exclamationmark.triangle"
+                )
+            }
+        }
         .sheet(isPresented: $viewModel.showAIRewrite, onDismiss: {
             viewModel.clearRewriteSelection()
         }) {
@@ -129,6 +144,20 @@ struct ReaderView: View {
             Button(String(localized: "好"), role: .cancel) {}
         } message: {
             Text(viewModel.rewriteSelectionErrorMessage ?? "")
+        }
+        .alert(String(localized: "\u{7ae0}\u{8282}\u{52a0}\u{8f7d}\u{5931}\u{8d25}"), isPresented: Binding(
+            get: { viewModel.chapterLoadError != nil },
+            set: { if !$0 { viewModel.chapterLoadError = nil } }
+        )) {
+            Button(String(localized: "\u{91cd}\u{8bd5}")) {
+                viewModel.loadCurrentChapterContentIfNeeded(
+                    restoreOffset: viewModel.book.currentPageOffset,
+                    force: true
+                )
+            }
+            Button(String(localized: "\u{53d6}\u{6d88}"), role: .cancel) {}
+        } message: {
+            Text(viewModel.chapterLoadError ?? "")
         }
         .background {
             GeometryReader { geo in
@@ -516,36 +545,68 @@ struct ReaderView: View {
     }
 
     private var chapterListSheet: some View {
-        NavigationStack {
-            List {
-                ForEach(Array(viewModel.chapters.enumerated()), id: \.element.id) { idx, chapter in
-                    Button {
-                        viewModel.goToChapter(idx)
-                    } label: {
-                        HStack {
-                            Text(chapter.title)
-                                .foregroundStyle(.primary)
-                                .lineLimit(2)
-                            Spacer()
-                            if idx == viewModel.chapterIndex {
-                                Image(systemName: "checkmark")
-                                    .foregroundStyle(.tint)
+        let normal = Array(viewModel.chapters.enumerated())
+        let displayed = chapterListReversed ? Array(normal.reversed()) : normal
+        return NavigationStack {
+            ScrollViewReader { proxy in
+                List {
+                    ForEach(displayed, id: \.element.id) { index, chapter in
+                        Button {
+                            viewModel.goToChapter(index)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(chapter.title)
+                                        .foregroundStyle(.primary)
+                                        .lineLimit(2)
+                                    Text(String(localized: "\u{7b2c} \(index + 1) \u{7ae0}"))
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                }
+                                Spacer()
+                                if index == viewModel.chapterIndex {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(.tint)
+                                }
                             }
+                            .frame(minHeight: 44)
                         }
-                        .frame(minHeight: 44)
+                        .id(chapter.id)
                     }
                 }
+                .onAppear { scrollToCurrentChapter(proxy) }
+                .onChange(of: chapterListReversed) { _, _ in
+                    scrollToCurrentChapter(proxy)
+                }
             }
-            .navigationTitle(String(localized: "目录"))
+            .navigationTitle(String(localized: "\u{76ee}\u{5f55}"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(String(localized: "关闭")) {
+                    Button(String(localized: "\u{5173}\u{95ed}")) {
                         viewModel.showChapterList = false
+                    }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button {
+                        chapterListReversed.toggle()
+                    } label: {
+                        Label(
+                            chapterListReversed ? String(localized: "\u{6b63}\u{5e8f}") : String(localized: "\u{5012}\u{5e8f}"),
+                            systemImage: chapterListReversed ? "arrow.up" : "arrow.down"
+                        )
                     }
                 }
             }
         }
         .presentationDetents([.medium, .large])
+    }
+
+    private func scrollToCurrentChapter(_ proxy: ScrollViewProxy) {
+        guard let chapterID = viewModel.currentChapter?.id else { return }
+        Task { @MainActor in
+            await Task.yield()
+            proxy.scrollTo(chapterID, anchor: .center)
+        }
     }
 }

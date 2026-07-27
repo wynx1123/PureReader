@@ -166,7 +166,7 @@ enum TextPaginator {
         paragraph.lineSpacing = layout.resolvedLineSpacing
         paragraph.firstLineHeadIndent = layout.fontSize * layout.firstLineIndentChars
         paragraph.paragraphSpacing = layout.fontSize * layout.paragraphSpacingRatio
-        paragraph.alignment = .justified
+        paragraph.alignment = .natural
         paragraph.lineBreakMode = .byWordWrapping
         let color = layout.isDark ? UIColor.white : UIColor.black
         let attrs: [NSAttributedString.Key: Any] = [

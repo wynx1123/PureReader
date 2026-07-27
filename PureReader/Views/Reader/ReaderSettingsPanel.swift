@@ -1,4 +1,4 @@
-import SwiftUI
+﻿import SwiftUI
 import UIKit
 
 struct ReaderSettingsPanel: View {
@@ -56,6 +56,8 @@ struct ReaderSettingsPanel: View {
                         Text(String(localized: "无")).tag(0.0)
                         Text(String(localized: "1 字")).tag(1.0)
                         Text(String(localized: "2 字")).tag(2.0)
+                        Text(String(localized: "3 字")).tag(3.0)
+                        Text(String(localized: "4 字")).tag(4.0)
                     }
                     .pickerStyle(.segmented)
 

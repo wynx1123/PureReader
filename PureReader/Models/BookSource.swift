@@ -44,6 +44,8 @@ final class BookSource {
     var groupName: String
     /// 搜索 URL，`{{key}}` 为关键词，`{{page}}` 为页码
     var searchURL: String
+    /// Discover/category URL. Legado commonly uses title::URL&&title2::URL.
+    var exploreURL: String = ""
     var bookURL: String
     var tocURL: String
     var contentURL: String
@@ -51,6 +53,8 @@ final class BookSource {
     var headerJSON: String = ""
     /// JSON 序列化的 ParseRule
     var ruleJSON: String
+    /// Discover-page rules; falls back to search rules when empty.
+    var exploreRuleJSON: String = ""
     var enabled: Bool
     var formatRaw: String
     var bookCount: Int
@@ -63,6 +67,23 @@ final class BookSource {
     var format: BookSourceFormat {
         get { BookSourceFormat(rawValue: formatRaw) ?? .pureReader }
         set { formatRaw = newValue.rawValue }
+    }
+
+    var exploreRules: ParseRule {
+        get {
+            guard !exploreRuleJSON.isEmpty,
+                  let data = exploreRuleJSON.data(using: .utf8),
+                  let value = try? JSONDecoder().decode(ParseRule.self, from: data) else {
+                return rules
+            }
+            return value
+        }
+        set {
+            if let data = try? JSONEncoder().encode(newValue),
+               let text = String(data: data, encoding: .utf8) {
+                exploreRuleJSON = text
+            }
+        }
     }
 
     var rules: ParseRule {
@@ -86,11 +107,13 @@ final class BookSource {
         name: String,
         groupName: String = "",
         searchURL: String = "",
+        exploreURL: String = "",
         bookURL: String = "",
         tocURL: String = "",
         contentURL: String = "",
         headerJSON: String = "",
         rules: ParseRule = .empty,
+        exploreRules: ParseRule? = nil,
         enabled: Bool = true,
         format: BookSourceFormat = .pureReader,
         comment: String = "",
@@ -100,6 +123,7 @@ final class BookSource {
         self.name = name
         self.groupName = groupName
         self.searchURL = searchURL
+        self.exploreURL = exploreURL
         self.bookURL = bookURL
         self.tocURL = tocURL
         self.contentURL = contentURL
@@ -109,6 +133,13 @@ final class BookSource {
             self.ruleJSON = s
         } else {
             self.ruleJSON = "{}"
+        }
+        if let exploreRules,
+           let data = try? JSONEncoder().encode(exploreRules),
+           let text = String(data: data, encoding: .utf8) {
+            self.exploreRuleJSON = text
+        } else {
+            self.exploreRuleJSON = ""
         }
         self.enabled = enabled
         self.formatRaw = format.rawValue
@@ -139,4 +170,22 @@ struct SourceChapterItem: Identifiable, Hashable, Sendable {
     var title: String
     var url: String
     var index: Int
+}
+
+
+/// Discover-page category entry.
+struct SourceExploreCategory: Identifiable, Hashable, Sendable {
+    let id = UUID()
+    var title: String
+    var url: String
+    var sourceID: UUID
+    var sourceName: String
+}
+
+/// Discover-page category entry.??????? UI ????
+struct BookSourceVerificationRequest: Identifiable, Hashable, Sendable {
+    let id = UUID()
+    var sourceID: UUID
+    var sourceName: String
+    var url: URL
 }

@@ -89,6 +89,7 @@ struct BackupBook: Codable, Sendable {
     var sourceTypeRaw: String
     var sourceName: String?
     var sourceURL: String?
+    var bookSourceID: UUID?
     var filePath: String?
     var formatRaw: String
     var totalChapters: Int
@@ -112,6 +113,7 @@ struct BackupChapter: Codable, Sendable {
     var content: String
     /// EPUB 内嵌图片，Base64 存储。
     var richContentData: Data?
+    var sourceURL: String?
 }
 
 struct BackupReadingRecord: Codable, Sendable {
@@ -162,11 +164,13 @@ struct BackupBookSource: Codable, Sendable {
     var name: String
     var groupName: String
     var searchURL: String
+    var exploreURL: String?
     var bookURL: String
     var tocURL: String
     var contentURL: String
     var headerJSON: String
     var ruleJSON: String
+    var exploreRuleJSON: String?
     var enabled: Bool
     var formatRaw: String
     var bookCount: Int
@@ -542,7 +546,8 @@ enum BackupService {
                     index: chapter.index,
                     title: chapter.title,
                     content: chapter.content,
-                    richContentData: chapter.richContentData
+                    richContentData: chapter.richContentData,
+                    sourceURL: chapter.sourceURL
                 )
             }
         let records = (book.records ?? []).map { record in
@@ -560,6 +565,7 @@ enum BackupService {
             sourceTypeRaw: book.sourceTypeRaw,
             sourceName: book.sourceName,
             sourceURL: book.sourceURL,
+            bookSourceID: book.bookSourceID,
             filePath: book.filePath,
             formatRaw: book.formatRaw,
             totalChapters: book.totalChapters,
@@ -583,11 +589,13 @@ enum BackupService {
             name: source.name,
             groupName: source.groupName,
             searchURL: source.searchURL,
+            exploreURL: source.exploreURL,
             bookURL: source.bookURL,
             tocURL: source.tocURL,
             contentURL: source.contentURL,
             headerJSON: source.headerJSON,
             ruleJSON: source.ruleJSON,
+            exploreRuleJSON: source.exploreRuleJSON,
             enabled: source.enabled,
             formatRaw: source.formatRaw,
             bookCount: source.bookCount,
@@ -861,6 +869,7 @@ enum BackupService {
             sourceType: SourceType(rawValue: dto.sourceTypeRaw) ?? .local,
             sourceName: dto.sourceName,
             sourceURL: dto.sourceURL,
+            bookSourceID: dto.bookSourceID,
             filePath: dto.filePath,
             format: BookFormat(rawValue: dto.formatRaw) ?? .txt,
             totalChapters: dto.totalChapters,
@@ -883,8 +892,9 @@ enum BackupService {
                 index: source.index,
                 title: source.title,
                 // 与 BookImportService.save 保持一致：空正文写一个空格，避免分页器拿到零长度串。
-                content: source.content.isEmpty ? " " : source.content,
-                richContentData: source.richContentData
+                content: source.content,
+                richContentData: source.richContentData,
+                sourceURL: source.sourceURL
             )
             chapter.book = book
             context.insert(chapter)
@@ -916,6 +926,7 @@ enum BackupService {
             name: dto.name,
             groupName: dto.groupName,
             searchURL: dto.searchURL,
+            exploreURL: dto.exploreURL ?? "",
             bookURL: dto.bookURL,
             tocURL: dto.tocURL,
             contentURL: dto.contentURL,
@@ -927,6 +938,7 @@ enum BackupService {
         )
         // 规则原样回填，避免 ParseRule 结构升级后往返丢字段。
         source.ruleJSON = dto.ruleJSON.isEmpty ? "{}" : dto.ruleJSON
+        source.exploreRuleJSON = dto.exploreRuleJSON ?? ""
         source.bookCount = dto.bookCount
         source.lastCheckedAt = dto.lastCheckedAt
         source.isValid = dto.isValid
@@ -940,11 +952,13 @@ enum BackupService {
         target.name = dto.name
         target.groupName = dto.groupName
         target.searchURL = dto.searchURL
+        target.exploreURL = dto.exploreURL ?? ""
         target.bookURL = dto.bookURL
         target.tocURL = dto.tocURL
         target.contentURL = dto.contentURL
         target.headerJSON = dto.headerJSON
         target.ruleJSON = dto.ruleJSON.isEmpty ? "{}" : dto.ruleJSON
+        target.exploreRuleJSON = dto.exploreRuleJSON ?? ""
         target.enabled = dto.enabled
         target.formatRaw = dto.formatRaw
         target.bookCount = dto.bookCount

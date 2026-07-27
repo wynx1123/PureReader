@@ -202,11 +202,13 @@ enum BookSourceImporter {
         target.name = source.name
         target.groupName = source.groupName
         target.searchURL = source.searchURL
+        target.exploreURL = source.exploreURL
         target.bookURL = source.bookURL
         target.tocURL = source.tocURL
         target.contentURL = source.contentURL
         target.headerJSON = source.headerJSON
         target.ruleJSON = source.ruleJSON
+        target.exploreRuleJSON = source.exploreRuleJSON
         target.enabled = source.enabled
         target.formatRaw = source.formatRaw
         target.isValid = source.isValid
@@ -227,9 +229,6 @@ enum BookSourceImporter {
         let lower = searchURL.lowercased()
         if lower.contains("@js:") || lower.contains("<js>") || lower.contains("</js>") {
             return String(localized: "包含 JavaScript 搜索逻辑")
-        }
-        if lower.contains("webview") || lower.contains("startbrowser") {
-            return String(localized: "依赖 WebView/Cookie 验证")
         }
         guard BookSourceEngine.canBuildSearchRequest(
             raw: searchURL,
@@ -287,6 +286,7 @@ enum BookSourceImporter {
                 "name": s.name,
                 "group": s.groupName,
                 "searchUrl": s.searchURL,
+                "exploreUrl": s.exploreURL,
                 "bookUrl": s.bookURL,
                 "tocUrl": s.tocURL,
                 "contentUrl": s.contentURL,
@@ -296,6 +296,7 @@ enum BookSourceImporter {
                 "comment": s.comment,
                 "weight": s.weight,
                 "ruleSearch": ruleDict(s.rules, kind: .search),
+                "ruleExplore": ruleDict(s.exploreRules, kind: .search),
                 "ruleBookInfo": ruleDict(s.rules, kind: .info),
                 "ruleToc": ruleDict(s.rules, kind: .toc),
                 "ruleContent": ruleDict(s.rules, kind: .content)
@@ -371,6 +372,7 @@ enum BookSourceImporter {
         }
         let group = string(obj, "bookSourceGroup") ?? string(obj, "group") ?? ""
         let search = string(obj, "searchUrl") ?? string(obj, "searchURL") ?? ""
+        let explore = string(obj, "exploreUrl") ?? string(obj, "exploreURL") ?? ""
         let baseURL = sanitizedBaseURL(string(obj, "bookSourceUrl") ?? "")
         guard !search.isEmpty else { throw ImportError.invalidFormat }
         let comment = string(obj, "bookSourceComment") ?? string(obj, "comment") ?? ""
@@ -387,6 +389,17 @@ enum BookSourceImporter {
             rules.intro = string(rs, "intro")
             rules.coverUrl = string(rs, "coverUrl")
             rules.bookUrl = string(rs, "bookUrl")
+        }
+        var exploreRules: ParseRule?
+        if let re = obj["ruleExplore"] as? [String: Any] {
+            exploreRules = ParseRule(
+                bookList: string(re, "bookList"),
+                name: string(re, "name"),
+                author: string(re, "author"),
+                intro: string(re, "intro"),
+                coverUrl: string(re, "coverUrl"),
+                bookUrl: string(re, "bookUrl")
+            )
         }
         if let ri = obj["ruleBookInfo"] as? [String: Any] {
             rules.tocUrl = string(ri, "tocUrl") ?? rules.tocUrl
@@ -410,11 +423,13 @@ enum BookSourceImporter {
             name: name,
             groupName: group,
             searchURL: search,
+            exploreURL: explore,
             bookURL: baseURL,
             tocURL: "",
             contentURL: "",
             headerJSON: headerStorageString(obj["header"]),
             rules: rules,
+            exploreRules: exploreRules,
             enabled: enabled,
             format: .legado,
             comment: compatibility.map { appendCompatibilityNote(comment, issue: $0) }
@@ -432,6 +447,7 @@ enum BookSourceImporter {
         }
         let host = string(obj, "host") ?? ""
         let search = string(obj, "search_url") ?? string(obj, "searchUrl") ?? (host + "/search?q={{key}}")
+        let explore = string(obj, "explore_url") ?? string(obj, "exploreUrl") ?? ""
         var rules = ParseRule()
         rules.bookList = string(obj, "search_list") ?? string(obj, "bookList")
         rules.name = string(obj, "search_name") ?? string(obj, "name_rule")
@@ -446,6 +462,7 @@ enum BookSourceImporter {
             name: name,
             groupName: string(obj, "group") ?? "爱阅记",
             searchURL: search,
+            exploreURL: explore,
             headerJSON: headerStorageString(obj["header"] ?? obj["headers"]),
             rules: rules,
             enabled: bool(obj, "enabled") ?? true,
@@ -490,6 +507,11 @@ enum BookSourceImporter {
             rules.content = string(obj, "contentRule")
         }
         let searchURL = string(obj, "searchUrl") ?? string(obj, "searchURL") ?? ""
+        let exploreURL = string(obj, "exploreUrl") ?? string(obj, "exploreURL") ?? ""
+        var exploreRules: ParseRule?
+        if let explore = obj["ruleExplore"] as? [String: Any] {
+            exploreRules = rulesFromDict(explore)
+        }
         guard !searchURL.isEmpty, rules.name != nil, rules.bookUrl != nil else {
             throw ImportError.invalidFormat
         }
@@ -497,11 +519,13 @@ enum BookSourceImporter {
             name: name,
             groupName: string(obj, "group") ?? "",
             searchURL: searchURL,
+            exploreURL: exploreURL,
             bookURL: string(obj, "bookUrl") ?? "",
             tocURL: string(obj, "tocUrl") ?? "",
             contentURL: string(obj, "contentUrl") ?? "",
             headerJSON: headerStorageString(obj["header"] ?? obj["headers"]),
             rules: rules,
+            exploreRules: exploreRules,
             enabled: bool(obj, "enabled") ?? true,
             format: .pureReader,
             comment: string(obj, "comment") ?? "",

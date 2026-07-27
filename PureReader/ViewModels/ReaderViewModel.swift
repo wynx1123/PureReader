@@ -28,6 +28,10 @@ final class ReaderViewModel {
     private(set) var verticalPages: [BookReaderPage] = []
     private(set) var pageIndex: Int = 0
     private(set) var isPaginating = false
+    private(set) var isLoadingChapterContent = false
+    var chapterLoadError: String?
+    var verificationRequest: BookSourceVerificationRequest?
+    private(set) var verificationSource: BookSource?
     private(set) var pageSize: CGSize = .zero
 
     // UI chrome
@@ -68,6 +72,8 @@ final class ReaderViewModel {
     private var saveTask: Task<Void, Never>?
     private var ttsContinuationTask: Task<Void, Never>?
     private var sleepTimerTask: Task<Void, Never>?
+    private var chapterFetchTask: Task<Void, Never>?
+    private var loadingChapterID: UUID?
 
     init(book: Book, context: ModelContext) {
         self.book = book
@@ -122,6 +128,7 @@ final class ReaderViewModel {
         try? context.save()
         applyScreenSettings()
         BookUnderstandingCoordinator.shared.scheduleIfNeeded(book: book, context: context)
+        loadCurrentChapterContentIfNeeded(restoreOffset: book.currentPageOffset)
     }
 
     func onDisappear() {
@@ -129,6 +136,8 @@ final class ReaderViewModel {
         ttsContinuationTask?.cancel()
         sleepTimerTask?.cancel()
         sleepTimerTask = nil
+        chapterFetchTask?.cancel()
+        chapterFetchTask = nil
         sleepRemainingSeconds = 0
         tts.stop()
         timer.stop()
@@ -217,6 +226,13 @@ final class ReaderViewModel {
         guard let chapter = currentChapter else {
             pages = []
             pageIndex = 0
+            return
+        }
+        if chapter.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           chapter.sourceURL != nil {
+            pages = []
+            pageIndex = 0
+            loadCurrentChapterContentIfNeeded(restoreOffset: restoreOffset)
             return
         }
         let size = pageSize
@@ -406,6 +422,104 @@ final class ReaderViewModel {
         }
     }
 
+    // MARK: - Online chapter loading
+
+    func loadCurrentChapterContentIfNeeded(restoreOffset: Int? = nil, force: Bool = false) {
+        guard let chapter = currentChapter,
+              let chapterURL = chapter.sourceURL,
+              !chapterURL.isEmpty else { return }
+        if !force, !chapter.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
+        if loadingChapterID == chapter.id { return }
+        guard let source = resolveOnlineSource() else {
+            chapterLoadError = String(localized: "\u{627e}\u{4e0d}\u{5230}\u{8fd9}\u{672c}\u{4e66}\u{5bf9}\u{5e94}\u{7684}\u{4e66}\u{6e90}\u{ff0c}\u{8bf7}\u{91cd}\u{65b0}\u{5bfc}\u{5165}\u{4e66}\u{6e90}\u{540e}\u{91cd}\u{8bd5}\u{3002}")
+            return
+        }
+
+        chapterFetchTask?.cancel()
+        loadingChapterID = chapter.id
+        isLoadingChapterContent = true
+        isPaginating = true
+        chapterLoadError = nil
+        let chapterID = chapter.id
+        let sourceSnapshot = BookSourceSnapshot(source)
+        chapterFetchTask = Task {
+            defer {
+                if loadingChapterID == chapterID {
+                    loadingChapterID = nil
+                    isLoadingChapterContent = false
+                }
+            }
+            do {
+                let text = try await BookSourceEngine.fetchContent(
+                    chapterURL: chapterURL,
+                    source: sourceSnapshot
+                )
+                guard !Task.isCancelled,
+                      let target = chapters.first(where: { $0.id == chapterID }) else { return }
+                let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalized.isEmpty else {
+                    throw BookSourceError.empty
+                }
+                target.content = normalized
+                try? context.save()
+                if currentChapter?.id == chapterID {
+                    repaginate(restoreOffset: restoreOffset ?? 0)
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                isPaginating = false
+                if case BookSourceError.verificationRequired(let url) = error {
+                    verificationSource = source
+                    verificationRequest = BookSourceVerificationRequest(
+                        sourceID: source.id,
+                        sourceName: source.name,
+                        url: url
+                    )
+                    chapterLoadError = nil
+                } else {
+                    chapterLoadError = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    func saveVerificationCookies(_ cookieHeader: String) {
+        guard let source = verificationSource else { return }
+        let trimmed = cookieHeader.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var headers: [String: String] = [:]
+        if let data = source.headerJSON.data(using: .utf8),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            for (key, value) in object {
+                if let text = value as? String { headers[key] = text }
+            }
+        }
+        headers["Cookie"] = trimmed
+        if let data = try? JSONSerialization.data(withJSONObject: headers, options: [.sortedKeys]),
+           let text = String(data: data, encoding: .utf8) {
+            source.headerJSON = text
+        }
+        source.enabled = true
+        source.isValid = true
+        source.lastCheckedAt = Date()
+        try? context.save()
+        verificationRequest = nil
+        chapterLoadError = nil
+        loadCurrentChapterContentIfNeeded(restoreOffset: book.currentPageOffset, force: true)
+    }
+
+    private func resolveOnlineSource() -> BookSource? {
+        let all = (try? context.fetch(FetchDescriptor<BookSource>())) ?? []
+        if let id = book.bookSourceID, let exact = all.first(where: { $0.id == id }) {
+            return exact
+        }
+        if let name = book.sourceName {
+            return all.first { $0.name == name }
+        }
+        return nil
+    }
+
     // MARK: - Navigation
 
     func goToPage(_ index: Int) {
@@ -430,6 +544,7 @@ final class ReaderViewModel {
                 .map(\.page)
             rebuildVerticalPages()
             preloadVerticalChapters(around: id.chapterIndex)
+            loadCurrentChapterContentIfNeeded(restoreOffset: 0)
         }
         pageIndex = id.pageIndex
         book.currentPageOffset = target.page.location
@@ -560,7 +675,7 @@ final class ReaderViewModel {
     }
 
     func setFirstLineIndent(_ chars: Double) {
-        settings.firstLineIndentChars = min(4, max(0, chars))
+        settings.firstLineIndentChars = min(6, max(0, chars))
         saveSettings()
         repaginate()
     }

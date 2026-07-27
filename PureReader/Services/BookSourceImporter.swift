@@ -243,7 +243,12 @@ enum BookSourceImporter {
               string(searchRules, "bookUrl") != nil else {
             return String(localized: "缺少搜索列表、书名或详情地址规则")
         }
-        let ruleValues = searchRules.values.compactMap { $0 as? String }
+        // Only rules consumed by PureReader should decide whether search is usable.
+        // Legado sources often attach JavaScript to optional metadata such as kind
+        // or wordCount; disabling the whole source for unused fields hides otherwise
+        // valid name/author/book URL results (for example JSON API sources).
+        let consumedSearchKeys = ["bookList", "name", "author", "intro", "coverUrl", "bookUrl"]
+        let ruleValues = consumedSearchKeys.compactMap { string(searchRules, $0) }
         if ruleValues.contains(where: {
             let lowerRule = $0.lowercased()
             return lowerRule.contains("@js:") || lowerRule.contains("<js>")

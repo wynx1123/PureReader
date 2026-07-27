@@ -10,6 +10,9 @@ SRC = ROOT / "PureReader"
 PROJ = ROOT / "PureReader.xcodeproj"
 OUT = PROJ / "project.pbxproj"
 
+# 注意：INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads 必须保留。
+# 书源功能要访问用户自行导入的任意站点，大量书源站只有 HTTP，去掉后它们会全部失效。
+# API Key 相关路径（AI / TTS）的 HTTPS 强制在代码层做，见 AIConfig.isTransportAcceptable。
 BUNDLE_ID = "com.wynx.PureReader"
 DISPLAY_NAME = "纯享阅读"
 DEPLOY = "17.0"
@@ -264,6 +267,7 @@ def main() -> None:
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "{DISPLAY_NAME}";
+				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsArbitraryLoads = YES;
 				INFOPLIST_KEY_LSRequiresIPhoneOS = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIBackgroundModes = "audio";

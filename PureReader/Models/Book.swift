@@ -150,6 +150,20 @@ final class ReadingSettings {
     var ttsProviderRaw: String = TTSProvider.system.rawValue
     var ttsVoice: String
 
+    // 以下字段均带默认值，SwiftData 才能对存量库做轻量迁移。
+    /// 阅读时禁用自动锁屏。
+    var keepScreenOn: Bool = false
+    /// 应用内阅读亮度覆盖；<0 表示跟随系统、不接管。
+    var brightnessOverride: Double = -1
+    /// 段落首行缩进（字符数，按当前字号换算）。
+    var firstLineIndentChars: Double = 2
+    /// 段间距（相对字号的倍数）。
+    var paragraphSpacingRatio: Double = 0.35
+    /// 听书睡眠定时：分钟数；0 = 关闭。
+    var sleepTimerMinutes: Int = 0
+    /// 听书睡眠定时：读完本章即停。
+    var sleepAfterChapter: Bool = false
+
     var pageMargin: MarginMode {
         get { MarginMode(rawValue: pageMarginRaw) ?? .normal }
         set { pageMarginRaw = newValue.rawValue }
@@ -180,7 +194,13 @@ final class ReadingSettings {
         showPageNumber: Bool = true,
         ttsRate: Double = 0.5,
         ttsProvider: TTSProvider = .system,
-        ttsVoice: String = ""
+        ttsVoice: String = "",
+        keepScreenOn: Bool = false,
+        brightnessOverride: Double = -1,
+        firstLineIndentChars: Double = 2,
+        paragraphSpacingRatio: Double = 0.35,
+        sleepTimerMinutes: Int = 0,
+        sleepAfterChapter: Bool = false
     ) {
         self.fontSize = fontSize
         self.lineSpacing = lineSpacing
@@ -192,6 +212,69 @@ final class ReadingSettings {
         self.ttsRate = ttsRate
         self.ttsProviderRaw = ttsProvider.rawValue
         self.ttsVoice = ttsVoice
+        self.keepScreenOn = keepScreenOn
+        self.brightnessOverride = brightnessOverride
+        self.firstLineIndentChars = firstLineIndentChars
+        self.paragraphSpacingRatio = paragraphSpacingRatio
+        self.sleepTimerMinutes = sleepTimerMinutes
+        self.sleepAfterChapter = sleepAfterChapter
+    }
+}
+
+/// 书签与划线。
+///
+/// 用章内 UTF-16 偏移定位，与 `Book.currentPageOffset`、`ReaderPage.location`
+/// 同一套坐标系，可直接经 `TextPaginator.pageIndex(forCharacterOffset:in:)` 换算成页。
+@Model
+final class Bookmark {
+    var id: UUID
+    var bookID: UUID
+    var chapterID: UUID
+    var chapterIndex: Int
+    var chapterTitle: String
+    /// 章内 UTF-16 起始偏移。
+    var utf16Location: Int
+    /// 选区长度；0 表示这是一个位置书签而非划线。
+    var utf16Length: Int
+    /// 摘录的原文，用于列表展示与原文漂移后的重定位。
+    var excerpt: String
+    /// 用户笔记，可空。
+    var note: String = ""
+    /// 划线颜色标识；位置书签忽略此字段。
+    var colorRaw: String = HighlightColor.yellow.rawValue
+    var createdAt: Date
+
+    var isHighlight: Bool { utf16Length > 0 }
+
+    var color: HighlightColor {
+        get { HighlightColor(rawValue: colorRaw) ?? .yellow }
+        set { colorRaw = newValue.rawValue }
+    }
+
+    init(
+        id: UUID = UUID(),
+        bookID: UUID,
+        chapterID: UUID,
+        chapterIndex: Int,
+        chapterTitle: String,
+        utf16Location: Int,
+        utf16Length: Int = 0,
+        excerpt: String = "",
+        note: String = "",
+        color: HighlightColor = .yellow,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.bookID = bookID
+        self.chapterID = chapterID
+        self.chapterIndex = chapterIndex
+        self.chapterTitle = chapterTitle
+        self.utf16Location = utf16Location
+        self.utf16Length = utf16Length
+        self.excerpt = excerpt
+        self.note = note
+        self.colorRaw = color.rawValue
+        self.createdAt = createdAt
     }
 }
 

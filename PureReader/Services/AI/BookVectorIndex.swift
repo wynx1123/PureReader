@@ -145,10 +145,15 @@ actor BookVectorIndex {
         scored.reserveCapacity(entries.count)
 
         for entry in entries {
+            // 检索的目的是补充"别处"的设定。当前章的内容改写时已经作为前后文完整送入，
+            // 再作为"全书相关设定"返回既浪费预算，也会把即将被替换的原文喂回模型。
             if let ex = excludeChapterIndex, entry.chapterIndex == ex {
-                if let needle = excludeText, entry.text.contains(String(needle.prefix(40))) {
-                    continue
-                }
+                continue
+            }
+            if let needle = excludeText,
+               !needle.isEmpty,
+               entry.text.contains(String(needle.prefix(40))) {
+                continue
             }
             let sim = VectorMath.cosineSimilarity(queryVector, entry.embedding)
             if sim >= minSimilarity {

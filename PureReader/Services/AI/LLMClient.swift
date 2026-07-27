@@ -1,5 +1,27 @@
 import Foundation
 
+/// 错误响应体会直接显示在 UI 上，而部分网关会在 4xx 里回显请求头或 key 片段。
+/// 展示前先抹掉长串 token 与常见的 key 字段。
+func redactSecrets(in body: String, limit: Int) -> String {
+    var text = String(body.prefix(limit * 4))
+    let patterns = [
+        // Bearer <token> / api-key: <token>
+        #"(?i)(bearer\s+|api[-_]?key["'\s:=]+)[A-Za-z0-9._\-]{8,}"#,
+        // sk-... 之类的常见前缀密钥
+        #"(?i)\b(sk|pk|rk)-[A-Za-z0-9._\-]{8,}"#,
+        // JSON 里的 "authorization": "..." / "api_key": "..."
+        #"(?i)"(authorization|api[-_]?key|token|secret)"\s*:\s*"[^"]{8,}""#
+    ]
+    for pattern in patterns {
+        text = text.replacingOccurrences(
+            of: pattern,
+            with: "***",
+            options: [.regularExpression]
+        )
+    }
+    return String(text.prefix(limit))
+}
+
 /// OpenAI 兼容 Chat / Embeddings 客户端（URLSession，无三方 SDK）
 enum LLMClient {
     enum ClientError: LocalizedError {
@@ -18,10 +40,11 @@ enum LLMClient {
             case .modelNotSelected:
                 return String(localized: "请先从服务端拉取并选择模型")
             case .invalidURL:
-                return String(localized: "API 地址无效")
+                return String(
+                    localized: "API 地址无效。公网地址需使用 HTTPS（本机或局域网地址可用 HTTP）"
+                )
             case .httpStatus(let code, let body):
-                let snippet = String(body.prefix(200))
-                return String(localized: "API 错误 \(code)：\(snippet)")
+                return String(localized: "API 错误 \(code)：\(redactSecrets(in: body, limit: 200))")
             case .decodeFailed:
                 return String(localized: "无法解析 API 响应")
             case .emptyResponse:
@@ -208,9 +231,8 @@ enum LLMClient {
         var raw = value.trimmingCharacters(in: .whitespacesAndNewlines)
         while raw.hasSuffix("/") { raw.removeLast() }
         guard let url = URL(string: raw),
-              let scheme = url.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              url.host != nil
+              url.host != nil,
+              isTransportAcceptable(url)
         else { return nil }
         return url
     }

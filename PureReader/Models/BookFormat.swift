@@ -95,6 +95,25 @@ enum TTSProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     }
 }
 
+/// 划线颜色
+enum HighlightColor: String, Codable, CaseIterable, Identifiable, Sendable {
+    case yellow
+    case green
+    case blue
+    case pink
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .yellow: return String(localized: "黄")
+        case .green: return String(localized: "绿")
+        case .blue: return String(localized: "蓝")
+        case .pink: return String(localized: "粉")
+        }
+    }
+}
+
 /// 书架排序
 enum BookshelfSort: String, CaseIterable, Identifiable, Sendable {
     case lastRead
@@ -136,18 +155,50 @@ enum BookshelfLayout: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// 内置分组名（`group == nil` 视为默认）
+/// 内置分组（`group == nil` 视为默认）。
+///
+/// 持久化的是稳定 key 而非本地化字符串。此前直接存 `String(localized:)` 的结果，
+/// 用户切换系统语言后存量 `Book.group` 会与新的显示名对不上，书会从分组里「消失」。
 enum BuiltInGroup {
-    static let `default` = String(localized: "默认")
-    static let reading = String(localized: "正在读")
-    static let finished = String(localized: "已读完")
+    /// 存进 `Book.group` 的稳定标识。
+    static let defaultKey = "__default"
+    static let readingKey = "__reading"
+    static let finishedKey = "__finished"
 
-    static var all: [String] { [`default`, reading, finished] }
+    static var allKeys: [String] { [defaultKey, readingKey, finishedKey] }
+
+    /// 兼容旧版本：早期把本地化后的中文名直接存进了 group 字段。
+    private static let legacyNames: [String: String] = [
+        "默认": defaultKey,
+        "正在读": readingKey,
+        "已读完": finishedKey
+    ]
+
+    static func isBuiltIn(_ key: String?) -> Bool {
+        guard let key else { return true }
+        return key.isEmpty || allKeys.contains(key) || legacyNames.keys.contains(key)
+    }
+
+    /// 把存量值归一到稳定 key；自定义分组原样返回。
+    static func normalize(_ stored: String?) -> String? {
+        guard let stored, !stored.isEmpty else { return nil }
+        if let mapped = legacyNames[stored] { return mapped == defaultKey ? nil : mapped }
+        return stored == defaultKey ? nil : stored
+    }
 
     static func displayName(for stored: String?) -> String {
-        if let stored, !stored.isEmpty { return stored }
-        return `default`
+        let key = normalize(stored)
+        switch key {
+        case .none: return String(localized: "默认")
+        case .some(readingKey): return String(localized: "正在读")
+        case .some(finishedKey): return String(localized: "已读完")
+        case .some(let custom): return custom
+        }
     }
+
+    // 兼容旧调用方。
+    static var `default`: String { defaultKey }
+    static var all: [String] { allKeys }
 }
 
 enum ImportError: LocalizedError, Sendable {

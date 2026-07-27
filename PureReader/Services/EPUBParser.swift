@@ -549,9 +549,14 @@ enum EPUBParser {
            let href = manifest[coverID] {
             candidates.append(href)
         }
-        candidates.append(contentsOf: manifest.values.filter {
-            $0.lowercased().contains("cover")
-        })
+        // manifest 是字典，values 的遍历顺序不保证；不排序的话同一本书两次导入
+        // 可能选到不同封面。按 manifest id 排序以获得确定结果。
+        candidates.append(
+            contentsOf: manifest
+                .filter { $0.value.lowercased().contains("cover") }
+                .sorted { $0.key < $1.key }
+                .map(\.value)
+        )
 
         for href in candidates {
             let lowercased = href.lowercased()

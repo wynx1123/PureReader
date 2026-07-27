@@ -1,7 +1,18 @@
 import SwiftUI
+import UIKit
 
 struct ReaderSettingsPanel: View {
     @Bindable var viewModel: ReaderViewModel
+
+    /// 关闭「跟随系统」时以当前系统亮度作为起点，滑块不会突然跳到某个默认值。
+    @MainActor
+    private var currentSystemBrightness: Double {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+        let value = Double(scene?.screen.brightness ?? 0.5)
+        return min(1.0, max(0.1, value))
+    }
 
     var body: some View {
         NavigationStack {
@@ -35,6 +46,68 @@ struct ReaderSettingsPanel: View {
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                             .frame(width: 32, alignment: .trailing)
+                    }
+
+                    // 缩进按「字符数」给选项，排版层再按当前字号换算，换字号不会跑偏
+                    Picker(String(localized: "首行缩进"), selection: Binding(
+                        get: { viewModel.settings.firstLineIndentChars },
+                        set: { viewModel.setFirstLineIndent($0) }
+                    )) {
+                        Text(String(localized: "无")).tag(0.0)
+                        Text(String(localized: "1 字")).tag(1.0)
+                        Text(String(localized: "2 字")).tag(2.0)
+                    }
+                    .pickerStyle(.segmented)
+
+                    HStack {
+                        Text(String(localized: "段间距"))
+                        Slider(
+                            value: Binding(
+                                get: { viewModel.settings.paragraphSpacingRatio },
+                                set: { viewModel.setParagraphSpacing($0) }
+                            ),
+                            in: 0...1,
+                            step: 0.05
+                        )
+                        Text(String(format: "%.2f", viewModel.settings.paragraphSpacingRatio))
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .frame(width: 40, alignment: .trailing)
+                    }
+                }
+
+                Section(String(localized: "护眼与屏幕")) {
+                    Toggle(isOn: Binding(
+                        get: { viewModel.settings.keepScreenOn },
+                        set: { viewModel.setKeepScreenOn($0) }
+                    )) {
+                        Label(String(localized: "屏幕常亮"), systemImage: "sun.max")
+                    }
+
+                    // brightnessOverride 用 <0 表示不接管系统亮度，
+                    // UI 上拆成「跟随系统」开关 + 滑块，用户才不会被 -1 这种魔法值困惑
+                    Toggle(isOn: Binding(
+                        get: { viewModel.settings.brightnessOverride < 0 },
+                        set: { follow in
+                            viewModel.setBrightnessOverride(follow ? -1 : currentSystemBrightness)
+                        }
+                    )) {
+                        Label(String(localized: "亮度跟随系统"), systemImage: "circle.lefthalf.filled")
+                    }
+
+                    if viewModel.settings.brightnessOverride >= 0 {
+                        HStack {
+                            Image(systemName: "sun.min").font(.caption)
+                            Slider(
+                                value: Binding(
+                                    get: { min(1.0, max(0.1, viewModel.settings.brightnessOverride)) },
+                                    set: { viewModel.setBrightnessOverride($0) }
+                                ),
+                                in: 0.1...1.0
+                            )
+                            Image(systemName: "sun.max").font(.title3)
+                        }
+                        .accessibilityLabel(String(localized: "阅读亮度"))
                     }
                 }
 
@@ -176,6 +249,36 @@ struct ReaderSettingsPanel: View {
                         Label(String(localized: "AI 合成语音"), systemImage: "waveform.badge.sparkles")
                             .font(.footnote)
                             .foregroundStyle(.secondary)
+                    }
+
+                    Picker(String(localized: "睡眠定时"), selection: Binding(
+                        get: { viewModel.settings.sleepTimerMinutes },
+                        set: { viewModel.setSleepTimer(minutes: $0) }
+                    )) {
+                        Text(String(localized: "关闭")).tag(0)
+                        Text(String(localized: "15 分钟")).tag(15)
+                        Text(String(localized: "30 分钟")).tag(30)
+                        Text(String(localized: "60 分钟")).tag(60)
+                    }
+
+                    // 倒计时已经在跑时给出剩余时间，否则用户无法确认定时是否生效。
+                    if viewModel.sleepRemainingSeconds > 0 {
+                        LabeledContent(String(localized: "剩余")) {
+                            Text(
+                                Duration.seconds(viewModel.sleepRemainingSeconds)
+                                    .formatted(.time(pattern: .minuteSecond))
+                            )
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    // 与分钟定时互补：宁可多读几分钟也不在句子中间断掉
+                    Toggle(isOn: Binding(
+                        get: { viewModel.settings.sleepAfterChapter },
+                        set: { viewModel.setSleepAfterChapter($0) }
+                    )) {
+                        Label(String(localized: "读完本章停止"), systemImage: "moon.zzz")
                     }
                 }
             }

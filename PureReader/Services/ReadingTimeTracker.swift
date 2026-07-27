@@ -55,11 +55,11 @@ final class ReadingTimeTracker {
         sinceLastFlush = 0
     }
 
-    private func flush(force: Bool) {
+    /// 没有待写入的秒数时无事可做，`force` 与否都一样 —— 保留参数只为调用点语义清晰。
+    private func flush(force: Bool = false) {
         guard let book, let context = modelContext else { return }
         let delta = sinceLastFlush
-        guard delta > 0 || force else { return }
-        if delta <= 0 { return }
+        guard delta > 0 else { return }
 
         book.totalReadingSeconds += delta
 

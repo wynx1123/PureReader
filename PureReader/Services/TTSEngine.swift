@@ -32,6 +32,12 @@ final class TTSEngine: NSObject, ObservableObject {
     private var networkChunks: [SpeechChunk] = []
     private var networkChunkIndex = 0
     private var sessionID = UUID()
+    /// MPRemoteCommandCenter 是全局单例，注册的 target 必须在释放时摘掉，
+    /// 否则每个曾经存在过的引擎都会永久占据锁屏控制的响应链。
+    ///
+    /// 标为 nonisolated 以便在 deinit（非隔离上下文）中访问。
+    /// 只在 init 与 deinit 各写读一次，不存在并发访问。
+    nonisolated(unsafe) private var remoteCommandTargets: [(MPRemoteCommand, Any)] = []
 
     private var provider: TTSProvider = .system
     private var rateMultiplier: Double = 1
@@ -431,7 +437,10 @@ final class TTSEngine: NSObject, ObservableObject {
         guard let http = response as? HTTPURLResponse else { return }
         guard (200..<300).contains(http.statusCode) else {
             let body = String(data: data, encoding: .utf8) ?? ""
-            throw TTSNetworkError.httpStatus(http.statusCode, String(body.prefix(300)))
+            throw TTSNetworkError.httpStatus(
+                http.statusCode,
+                redactSecrets(in: body, limit: 300)
+            )
         }
     }
 
@@ -508,17 +517,26 @@ final class TTSEngine: NSObject, ObservableObject {
         center.playCommand.isEnabled = true
         center.pauseCommand.isEnabled = true
         center.togglePlayPauseCommand.isEnabled = true
-        center.playCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.resume() }
-            return .success
+
+        let commands: [(MPRemoteCommand, @MainActor (TTSEngine) -> Void)] = [
+            (center.playCommand, { $0.resume() }),
+            (center.pauseCommand, { $0.pause() }),
+            (center.togglePlayPauseCommand, { $0.toggle() })
+        ]
+        for (command, action) in commands {
+            let token = command.addTarget { [weak self] _ in
+                // 引擎已释放：报告无可操作项，让系统把控制权交给仍存活的响应者。
+                guard let self else { return .noActionableNowPlayingItem }
+                Task { @MainActor in action(self) }
+                return .success
+            }
+            remoteCommandTargets.append((command, token))
         }
-        center.pauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.pause() }
-            return .success
-        }
-        center.togglePlayPauseCommand.addTarget { [weak self] _ in
-            Task { @MainActor in self?.toggle() }
-            return .success
+    }
+
+    deinit {
+        for (command, token) in remoteCommandTargets {
+            command.removeTarget(token)
         }
     }
 
@@ -615,7 +633,9 @@ private enum TTSNetworkError: LocalizedError {
         case .notConfigured(let provider):
             return String(localized: "请先配置 \(provider) 的接口、API Key 与模型")
         case .invalidURL:
-            return String(localized: "TTS API 地址无效")
+            return String(
+                localized: "TTS API 地址无效。公网地址需使用 HTTPS（本机或局域网地址可用 HTTP）"
+            )
         case .unsupportedProvider:
             return String(localized: "当前语音引擎不支持网络合成")
         case .httpStatus(let code, let body):

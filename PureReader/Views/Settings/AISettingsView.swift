@@ -387,6 +387,7 @@ struct AISettingsView: View {
             }
 
             Section(String(localized: "说明")) {
+                Text(String(localized: "• 公网地址需使用 HTTPS；本机或局域网地址可用 HTTP"))
                 Text(String(localized: "• Chat: POST {base}/chat/completions"))
                 Text(String(localized: "• Embeddings: POST {base}/embeddings"))
                 Text(String(localized: "• 支持第三方兼容网关（改 Base URL 与模型名即可）"))

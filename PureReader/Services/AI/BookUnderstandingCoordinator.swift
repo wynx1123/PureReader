@@ -55,7 +55,9 @@ final class BookUnderstandingCoordinator {
             let mode = AIConfig.isEmbeddingConfigured
                 ? IndexingMode.determine(wordCount: wordCount)
                 : .skip
+            // 有脏批次说明改写后锚点已过时，需要重建（未脏的批次仍走磁盘缓存）。
             let hasAnchors = BookMemoryAnchorStore.loadAnchors(bookID: bookID) != nil
+                && !BookMemoryAnchorStore.hasDirtyBatches(bookID: bookID)
             let snaps = chapters.map {
                 BookDigestPipeline.ChapterSnapshot(
                     id: $0.id,
@@ -104,11 +106,36 @@ final class BookUnderstandingCoordinator {
         }
     }
 
-    /// 改写后增量更新索引与 batch dirty
+    /// 释放某本书常驻内存的向量索引与锚点。
+    ///
+    /// 每个索引持有全部 chunk 原文和 float 向量，长篇可达数十 MB；连续打开多本书
+    /// 而不驱逐会持续增长。磁盘缓存仍在，下次需要时会重新加载。
+    func releaseCaches(for bookID: UUID) {
+        guard tasks[bookID] == nil else { return }
+        indices[bookID] = nil
+        anchorsCache[bookID] = nil
+    }
+
+    /// 删书时清理内存与磁盘上的全部 AI 派生数据。
+    func purge(bookID: UUID) {
+        tasks[bookID]?.cancel()
+        tasks[bookID] = nil
+        indices[bookID] = nil
+        anchorsCache[bookID] = nil
+        if case .running(let id, _, _) = state, id == bookID {
+            state = .idle
+        }
+        try? FileManager.default.removeItem(at: BookVectorIndex.diskURL(for: bookID))
+        BookMemoryAnchorStore.removeAll(bookID: bookID)
+    }
+
+    /// 改写后增量更新索引与 batch dirty。
+    ///
+    /// 只把受影响的批次标脏。锚点本身保留 —— 它是全书级摘要，单段改写不会让它失效，
+    /// 而重建一次要跑「批次摘要 + 全量锚点提取」两轮 LLM 调用。锚点会在下次
+    /// `scheduleIfNeeded` 发现脏批次时统一重建。
     func onChapterRewritten(bookID: UUID, chapterID: UUID, chapterIndex: Int, content: String) {
         BookMemoryAnchorStore.markBatchDirty(bookID: bookID, chapterIndex: chapterIndex)
-        BookMemoryAnchorStore.invalidateAnchors(bookID: bookID)
-        anchorsCache[bookID] = nil
         guard AIConfig.isEmbeddingConfigured else { return }
         Task { [weak self] in
             guard let self else { return }

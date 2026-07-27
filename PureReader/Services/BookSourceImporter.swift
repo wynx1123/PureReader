@@ -125,26 +125,16 @@ enum BookSourceImporter {
         var lastError: Error?
         for attempt in 0..<3 {
             do {
-                let (bytes, response) = try await URLSession.shared.bytes(for: request)
+                // 曾经用 URLSession.bytes 逐字节 append，对 10 MB 上限意味着上千万次
+                // 异步迭代，几 MB 的社区合集就会卡死界面。改为一次性下载 + 预检长度。
+                let (data, response) = try await URLSession.shared.data(for: request)
                 if let http = response as? HTTPURLResponse {
                     guard (200...299).contains(http.statusCode) else {
                         throw ImportError.httpStatus(http.statusCode)
                     }
-                    if let length = http.value(forHTTPHeaderField: "Content-Length"),
-                       let byteCount = Int(length), byteCount > maxDownloadBytes {
-                        throw ImportError.responseTooLarge
-                    }
                 }
-
-                var data = Data()
-                data.reserveCapacity(min(response.expectedContentLength > 0
-                    ? Int(response.expectedContentLength)
-                    : 256 * 1024, maxDownloadBytes))
-                for try await byte in bytes {
-                    guard data.count < maxDownloadBytes else {
-                        throw ImportError.responseTooLarge
-                    }
-                    data.append(byte)
+                guard data.count <= maxDownloadBytes else {
+                    throw ImportError.responseTooLarge
                 }
                 return (data, response)
             } catch is CancellationError {

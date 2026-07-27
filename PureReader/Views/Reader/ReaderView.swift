@@ -1,20 +1,43 @@
 import SwiftUI
 import SwiftData
 
+/// 一次阅读会话。
+///
+/// ViewModel 在这里创建，且只创建一次；`ReaderView` 本身只持有引用。
+/// 这样即使 SwiftUI 反复重建 `ReaderView` struct，也不会重复构造 `TTSEngine`。
+@MainActor
+final class ReaderSession: Identifiable {
+    let id: PersistentIdentifier
+    let viewModel: ReaderViewModel
+
+    init(book: Book, context: ModelContext) {
+        self.id = book.persistentModelID
+        self.viewModel = ReaderViewModel(book: book, context: context)
+    }
+}
+
 struct ReaderView: View {
-    @Environment(\.modelContext) private var modelContext
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
 
-    @State private var viewModel: ReaderViewModel
+    // 只持有引用，不负责创建 —— 见 ReaderSession。
+    @Bindable private var viewModel: ReaderViewModel
+
     @State private var curlIndex: Int = 0
     @State private var verticalPageID: BookPageID?
+    @State private var showBookmarks = false
 
-    init(book: Book, context: ModelContext) {
-        _viewModel = State(initialValue: ReaderViewModel(book: book, context: context))
+    init(session: ReaderSession) {
+        self._viewModel = Bindable(session.viewModel)
     }
 
     private var bg: BackgroundType { viewModel.settings.backgroundColor }
+
+    /// 当前章的划线快照。Bookmark 是 @Model，不能直接下发给渲染层，
+    /// 在这里一次性转成值类型。
+    private var currentHighlights: [HighlightSpan] {
+        HighlightSpan.spans(from: viewModel.highlightsForCurrentChapter())
+    }
 
     var body: some View {
         ZStack {
@@ -88,6 +111,9 @@ struct ReaderView: View {
         .sheet(isPresented: $viewModel.showAIHistory) {
             RewriteHistoryView(viewModel: viewModel)
         }
+        .sheet(isPresented: $showBookmarks) {
+            BookmarkListView(viewModel: viewModel)
+        }
         .alert(String(localized: "听书失败"), isPresented: Binding(
             get: { viewModel.ttsErrorMessage != nil },
             set: { if !$0 { viewModel.ttsErrorMessage = nil } }
@@ -136,6 +162,7 @@ struct ReaderView: View {
                 showPageNumber: viewModel.settings.showPageNumber,
                 canGoToPreviousChapter: viewModel.chapterIndex > 0,
                 canGoToNextChapter: viewModel.chapterIndex + 1 < viewModel.chapters.count,
+                highlights: currentHighlights,
                 onIndexChange: { idx in
                     viewModel.goToPage(idx)
                 },
@@ -147,8 +174,17 @@ struct ReaderView: View {
                 },
                 onSelection: handleSelection,
                 onTap: { fraction in
-                    guard fraction >= 0.28, fraction <= 0.72 else { return }
-                    viewModel.toggleChrome()
+                    // 仿真翻页此前只响应中间区域，点两侧完全没反应，容易被当成失灵。
+                    // 这里改为与「左右滑动」一致的三段分区：点两侧翻页、点中间呼出菜单。
+                    // curlIndex 由 onChange(of: viewModel.pageIndex) 同步，
+                    // UIPageViewController 会带卷曲动画跟随。
+                    if fraction < 0.28 {
+                        viewModel.previousPage()
+                    } else if fraction > 0.72 {
+                        viewModel.nextPage()
+                    } else {
+                        viewModel.toggleChrome()
+                    }
                 }
             )
             .onChange(of: viewModel.pageIndex) { _, new in
@@ -192,6 +228,7 @@ struct ReaderView: View {
                     pageLabel: "\(idx + 1) / \(viewModel.pages.count)",
                     showHeader: viewModel.settings.showHeader,
                     showPageNumber: viewModel.settings.showPageNumber,
+                    highlights: currentHighlights,
                     onSelection: handleSelection,
                     onTap: handlePageTap
                 )
@@ -223,6 +260,10 @@ struct ReaderView: View {
                         pageLabel: "\(item.id.pageIndex + 1) / \(item.chapterPageCount)",
                         showHeader: viewModel.settings.showHeader,
                         showPageNumber: viewModel.settings.showPageNumber,
+                        // 纵向模式同屏可见多个章节，按该页所属章取划线。
+                        highlights: HighlightSpan.spans(
+                            from: viewModel.highlights(forChapterIndex: item.id.chapterIndex)
+                        ),
                         onSelection: { text, offset in
                             viewModel.goToVerticalPage(item.id)
                             handleSelection(text, offset)
@@ -280,7 +321,26 @@ struct ReaderView: View {
         viewModel.updateRewriteSelection(text: text, utf16Offset: offset)
     }
 
+    /// 用当前选区新建划线。选区状态与 AI 改写共用同一套（文本 + 章内绝对偏移）。
+    private func addHighlight(color: HighlightColor) {
+        guard let offset = viewModel.selectedRewriteOffset else { return }
+        viewModel.addHighlight(
+            text: viewModel.selectedRewriteText,
+            utf16Offset: offset,
+            color: color
+        )
+        viewModel.clearRewriteSelection()
+    }
+
+    /// 点击翻页的横向分区：左 28% 上一页、右 28% 下一页、中间呼出菜单。
+    ///
+    /// 只在「左右滑动」模式下启用。上下滚动模式若也接这套分区，用户滑动时
+    /// 手指落在屏幕两侧就会被判成翻页，与滚动手势语义冲突且极易误触。
     private func handlePageTap(_ fraction: CGFloat) {
+        guard viewModel.settings.pageTurnMode == .scroll else {
+            viewModel.toggleChrome()
+            return
+        }
         if fraction < 0.28 {
             viewModel.previousPage()
         } else if fraction > 0.72 {
@@ -293,8 +353,26 @@ struct ReaderView: View {
     private var rewriteSelectionAction: some View {
         VStack {
             Spacer()
-            HStack {
+            HStack(spacing: 10) {
                 Spacer()
+
+                // 划线不依赖 API Key，是选中文字后唯一零门槛的动作，放在改写左侧。
+                Menu {
+                    ForEach(HighlightColor.allCases) { color in
+                        Button {
+                            addHighlight(color: color)
+                        } label: {
+                            Label(color.displayName, systemImage: "highlighter")
+                        }
+                    }
+                } label: {
+                    Label(String(localized: "划线"), systemImage: "highlighter")
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .frame(height: 44)
+                }
+                .buttonStyle(.bordered)
+
                 Button {
                     viewModel.beginRewriteForSelection()
                 } label: {
@@ -336,6 +414,27 @@ struct ReaderView: View {
             }
 
             Spacer()
+
+            Button {
+                viewModel.toggleBookmarkAtCurrentPage()
+            } label: {
+                // 实心/空心区分当前页是否已加书签，省去再点开列表确认。
+                Image(systemName: viewModel.currentPageHasBookmark ? "bookmark.fill" : "bookmark")
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel(
+                viewModel.currentPageHasBookmark
+                    ? String(localized: "取消书签")
+                    : String(localized: "添加书签")
+            )
+
+            Button {
+                showBookmarks = true
+            } label: {
+                Image(systemName: "text.badge.star")
+                    .frame(width: 44, height: 44)
+            }
+            .accessibilityLabel(String(localized: "书签与划线"))
 
             Button {
                 viewModel.showChapterList = true

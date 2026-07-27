@@ -214,19 +214,30 @@ struct BookSourceManagerView: View {
     private func handleImport(_ result: Result<[URL], Error>) {
         switch result {
         case .failure(let err):
+            let nsError = err as NSError
+            // 用户取消选择不算失败。
+            guard nsError.code != NSUserCancelledError else { return }
             message = err.localizedDescription
         case .success(let urls):
             guard let url = urls.first else { return }
+            // 在 fileImporter 回调当下取得 scope，文件读取放到后台，
+            // 避免大合集在主线程上做 IO + JSON 解析。
+            let accessed = url.startAccessingSecurityScopedResource()
             isBusy = true
-            defer { isBusy = false }
-            do {
-                let accessed = url.startAccessingSecurityScopedResource()
-                defer { if accessed { url.stopAccessingSecurityScopedResource() } }
-                let data = try Data(contentsOf: url)
-                let result = try BookSourceImporter.importJSON(data, into: modelContext)
-                message = result.message
-            } catch {
-                message = error.localizedDescription
+            Task {
+                defer {
+                    if accessed { url.stopAccessingSecurityScopedResource() }
+                    isBusy = false
+                }
+                do {
+                    let data = try await Task.detached(priority: .userInitiated) {
+                        try Data(contentsOf: url)
+                    }.value
+                    let outcome = try BookSourceImporter.importJSON(data, into: modelContext)
+                    message = outcome.message
+                } catch {
+                    message = error.localizedDescription
+                }
             }
         }
     }

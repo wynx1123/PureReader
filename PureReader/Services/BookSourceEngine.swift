@@ -18,26 +18,35 @@ struct BookSourceValidationResult: Sendable {
     var message: String
 }
 
+/// `BookSource` 的值语义快照。
+///
+/// `BookSource` 是 SwiftData `@Model`，只能在其所属 context 的 actor 上访问。网络抓取跑在
+/// 任意执行器上，因此所有跨越 await 的读取都必须先在调用方（主 actor）取快照。
+struct BookSourceSnapshot: Sendable {
+    var id: UUID
+    var name: String
+    var searchURL: String
+    var bookURL: String
+    var tocURL: String
+    var contentURL: String
+    var headerJSON: String
+    var rules: ParseRule
+
+    @MainActor
+    init(_ source: BookSource) {
+        id = source.id
+        name = source.name
+        searchURL = source.searchURL
+        bookURL = source.bookURL
+        tocURL = source.tocURL
+        contentURL = source.contentURL
+        headerJSON = source.headerJSON
+        rules = source.rules
+    }
+}
+
 /// 书源网络引擎：搜索 / 目录 / 正文（15s 超时 + 最多 2 次重试）
 enum BookSourceEngine {
-    private struct SearchSource: Sendable {
-        var id: UUID
-        var name: String
-        var searchURL: String
-        var bookURL: String
-        var headerJSON: String
-        var rules: ParseRule
-
-        init(_ source: BookSource) {
-            id = source.id
-            name = source.name
-            searchURL = source.searchURL
-            bookURL = source.bookURL
-            headerJSON = source.headerJSON
-            rules = source.rules
-        }
-    }
-
     private struct SearchBatch: Sendable {
         var results: [SourceSearchResult]
         var failure: BookSourceSearchFailure?
@@ -55,22 +64,31 @@ enum BookSourceEngine {
 
     // MARK: - Search
 
+    @MainActor
     static func search(
         keyword: String,
         sources: [BookSource],
         page: Int = 1
     ) async -> BookSourceSearchReport {
-        let key = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else {
-            return BookSourceSearchReport(results: [], attemptedCount: 0, failures: [])
-        }
         // isValid is a health indicator, not a permanent block. A user can retry a
         // previously failed source without having to re-import it first.
         let enabled = sources.filter { $0.enabled && !$0.searchURL.isEmpty }
-        guard !enabled.isEmpty else {
+        return await search(
+            keyword: keyword,
+            snapshots: enabled.map { BookSourceSnapshot($0) },
+            page: page
+        )
+    }
+
+    static func search(
+        keyword: String,
+        snapshots searchable: [BookSourceSnapshot],
+        page: Int = 1
+    ) async -> BookSourceSearchReport {
+        let key = keyword.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty, !searchable.isEmpty else {
             return BookSourceSearchReport(results: [], attemptedCount: 0, failures: [])
         }
-        let searchable = enabled.map { SearchSource($0) }
 
         return await withTaskGroup(of: SearchBatch.self) { group in
             for source in searchable {
@@ -119,15 +137,7 @@ enum BookSourceEngine {
 
     private static func searchOne(
         keyword: String,
-        source: BookSource,
-        page: Int
-    ) async throws -> [SourceSearchResult] {
-        try await searchOne(keyword: keyword, source: SearchSource(source), page: page)
-    }
-
-    private static func searchOne(
-        keyword: String,
-        source: SearchSource,
+        source: BookSourceSnapshot,
         page: Int
     ) async throws -> [SourceSearchResult] {
         guard let request = makeSearchRequest(
@@ -175,7 +185,7 @@ enum BookSourceEngine {
     private static func parseSearchFromRoot(
         body: String,
         url: URL,
-        source: SearchSource
+        source: BookSourceSnapshot
     ) -> [SourceSearchResult] {
         let rules = source.rules
         // JSON arrays of books via bookUrl list
@@ -210,7 +220,15 @@ enum BookSourceEngine {
 
     // MARK: - TOC
 
+    @MainActor
     static func fetchTOC(bookURL: String, source: BookSource) async throws -> [SourceChapterItem] {
+        try await fetchTOC(bookURL: bookURL, source: BookSourceSnapshot(source))
+    }
+
+    static func fetchTOC(
+        bookURL: String,
+        source: BookSourceSnapshot
+    ) async throws -> [SourceChapterItem] {
         let rules = source.rules
         var tocURLString = source.tocURL.isEmpty ? bookURL : source.tocURL
         tocURLString = tocURLString
@@ -257,7 +275,15 @@ enum BookSourceEngine {
 
     // MARK: - Content
 
+    @MainActor
     static func fetchContent(chapterURL: String, source: BookSource) async throws -> String {
+        try await fetchContent(chapterURL: chapterURL, source: BookSourceSnapshot(source))
+    }
+
+    static func fetchContent(
+        chapterURL: String,
+        source: BookSourceSnapshot
+    ) async throws -> String {
         let rules = source.rules
         var urlString = source.contentURL.isEmpty ? chapterURL : source.contentURL
         urlString = urlString
@@ -274,12 +300,21 @@ enum BookSourceEngine {
 
     // MARK: - Validate source
 
+    @MainActor
     static func validate(_ source: BookSource, keyword: String = "修仙") async -> Bool {
         (await validateDetailed(source, keyword: keyword)).isReachable
     }
 
+    @MainActor
     static func validateDetailed(
         _ source: BookSource,
+        keyword: String = "修仙"
+    ) async -> BookSourceValidationResult {
+        await validateDetailed(BookSourceSnapshot(source), keyword: keyword)
+    }
+
+    static func validateDetailed(
+        _ source: BookSourceSnapshot,
         keyword: String = "修仙"
     ) async -> BookSourceValidationResult {
         do {
@@ -303,48 +338,6 @@ enum BookSourceEngine {
                 message: error.localizedDescription
             )
         }
-    }
-
-    // MARK: - Import book fully
-
-    static func downloadBook(
-        result: SourceSearchResult,
-        source: BookSource,
-        into context: ModelContext,
-        maxChapters: Int = 500
-    ) async throws -> Book {
-        let chapters = try await fetchTOC(bookURL: result.bookURL, source: source)
-        let limited = Array(chapters.prefix(maxChapters))
-        var chapterModels: [Chapter] = []
-        for (i, item) in limited.enumerated() {
-            // 控制并发：串行拉取避免封禁
-            let content: String
-            do {
-                content = try await fetchContent(chapterURL: item.url, source: source)
-            } catch {
-                content = ""
-            }
-            let ch = Chapter(index: i, title: item.title, content: content.isEmpty ? "（正文获取失败）" : content)
-            chapterModels.append(ch)
-            // 轻微间隔
-            if i % 5 == 4 {
-                try? await Task.sleep(nanoseconds: 200_000_000)
-            }
-        }
-        let book = Book(
-            title: result.name,
-            author: result.author,
-            sourceType: .booksource,
-            sourceName: result.sourceName,
-            sourceURL: result.bookURL,
-            format: .online,
-            totalChapters: chapterModels.count
-        )
-        book.chapters = chapterModels
-        for ch in chapterModels { ch.book = book }
-        context.insert(book)
-        try context.save()
-        return book
     }
 
     // MARK: - Network
@@ -424,14 +417,22 @@ enum BookSourceEngine {
         )
         let pathTemplate = separator.map { String(trimmed[..<$0.lowerBound]) } ?? trimmed
         let descriptorTemplate = separator.map { String(trimmed[$0.upperBound...]) } ?? ""
-        let path = replacePlaceholders(
-            in: pathTemplate,
-            keyword: percentEncodeQueryValue(keyword),
-            page: page
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
         let descriptor = replacePlaceholders(
             in: descriptorTemplate,
             keyword: escapedJSONString(keyword),
+            page: page
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let options = requestOptions(from: descriptor) else { return nil }
+
+        // 关键词编码必须用书源声明的 charset。GBK/GB2312 站点走 GET 时，
+        // 若按 UTF-8 百分号编码，中文关键词会变成站点无法识别的字节序列，
+        // 搜索恒为空。descriptor 必须先解析出来才知道 charset。
+        let path = replacePlaceholders(
+            in: pathTemplate,
+            keyword: percentEncodeQueryValue(
+                keyword,
+                encoding: stringEncoding(for: options.charset)
+            ),
             page: page
         ).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !path.contains("{{"), !path.contains("}}"),
@@ -450,7 +451,6 @@ enum BookSourceEngine {
             return nil
         }
 
-        guard let options = requestOptions(from: descriptor) else { return nil }
         var request = URLRequest(url: url)
         request.httpMethod = options.method
         for (name, value) in parseHeaders(sourceHeaderJSON) {
@@ -673,7 +673,25 @@ enum BookSourceEngine {
         return String(encoded.dropFirst().dropLast())
     }
 
-    private static func percentEncodeQueryValue(_ value: String) -> String {
+    private static func percentEncodeQueryValue(
+        _ value: String,
+        encoding: String.Encoding = .utf8
+    ) -> String {
+        if encoding != .utf8 {
+            // 非 UTF-8 站点：按目标编码取字节后逐字节百分号编码。
+            guard let data = value.data(using: encoding) else {
+                // 目标编码表示不了该关键词，退回 UTF-8 而不是让整个请求失败。
+                return percentEncodeQueryValue(value)
+            }
+            let unreserved = Set(
+                "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~".utf8
+            )
+            return data.map { byte in
+                unreserved.contains(byte)
+                    ? String(UnicodeScalar(byte))
+                    : String(format: "%%%02X", byte)
+            }.joined()
+        }
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: "&=+?#")
         return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value

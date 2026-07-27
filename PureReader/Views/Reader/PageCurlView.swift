@@ -13,6 +13,8 @@ struct PageCurlView: UIViewControllerRepresentable {
     let showPageNumber: Bool
     let canGoToPreviousChapter: Bool
     let canGoToNextChapter: Bool
+    /// 当前章的划线，章内绝对偏移。
+    var highlights: [HighlightSpan] = []
     var onIndexChange: (Int) -> Void
     var onPreviousChapter: () -> Void
     var onNextChapter: () -> Void
@@ -33,6 +35,7 @@ struct PageCurlView: UIViewControllerRepresentable {
         pvc.delegate = context.coordinator
         pvc.isDoubleSided = false
         context.coordinator.parent = self
+        context.coordinator.invalidateCacheIfNeeded(for: pages, highlights: highlights)
         if let vc = context.coordinator.controller(for: pageIndex) {
             pvc.setViewControllers([vc], direction: .forward, animated: false)
         }
@@ -41,6 +44,9 @@ struct PageCurlView: UIViewControllerRepresentable {
 
     func updateUIViewController(_ pvc: UIPageViewController, context: Context) {
         context.coordinator.parent = self
+        // 换章 / 重新分页后旧的 host controller 仍持有失效的下标，必须先丢弃缓存，
+        // 否则复用到的 controller 会按旧下标去索引新的 pages 数组。
+        context.coordinator.invalidateCacheIfNeeded(for: pages, highlights: highlights)
         let target = context.coordinator.controller(for: pageIndex)
         // 外部 pageIndex 变化时同步
         if let current = pvc.viewControllers?.first as? PageHostController,
@@ -58,9 +64,41 @@ struct PageCurlView: UIViewControllerRepresentable {
     final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
         var parent: PageCurlView
         private var cache: [Int: PageHostController] = [:]
+        /// 当前缓存对应的分页结果标识（页数 + 首尾页在章节中的偏移）。
+        private var cacheToken: [Int]?
+        /// 缓存上限，避免长章节常驻数百个 UITextView。
+        private let maxCachedControllers = 8
 
         init(_ parent: PageCurlView) {
             self.parent = parent
+        }
+
+        private func token(for pages: [ReaderPage], highlights: [HighlightSpan]) -> [Int] {
+            // 划线变化也要让缓存失效：已在屏上的 controller 不会自己重新 apply，
+            // 不清缓存的话新加的划线要等翻页才显示。
+            var value = [pages.count, pages.first?.location ?? -1, pages.last?.location ?? -1]
+            value.append(highlights.count)
+            for span in highlights {
+                value.append(span.range.location)
+                value.append(span.range.length)
+            }
+            return value
+        }
+
+        func invalidateCacheIfNeeded(for pages: [ReaderPage], highlights: [HighlightSpan]) {
+            let current = token(for: pages, highlights: highlights)
+            guard cacheToken != current else { return }
+            cacheToken = current
+            cache.removeAll()
+        }
+
+        private func store(_ controller: PageHostController, at index: Int) {
+            if cache.count >= maxCachedControllers,
+               let victim = cache.keys.max(by: { abs($0 - index) < abs($1 - index) }),
+               victim != index {
+                cache.removeValue(forKey: victim)
+            }
+            cache[index] = controller
         }
 
         func controller(for index: Int) -> PageHostController? {
@@ -72,7 +110,7 @@ struct PageCurlView: UIViewControllerRepresentable {
                     background: parent.background,
                     systemImage: "chevron.left.2"
                 )
-                cache[index] = vc
+                store(vc, at: index)
                 return vc
             }
             if index == parent.pages.count, parent.canGoToNextChapter {
@@ -83,32 +121,19 @@ struct PageCurlView: UIViewControllerRepresentable {
                     background: parent.background,
                     systemImage: "chevron.right.2"
                 )
-                cache[index] = vc
+                store(vc, at: index)
                 return vc
             }
             guard parent.pages.indices.contains(index) else { return nil }
-            if let hit = cache[index] {
-                hit.apply(
-                    page: parent.pages[index],
-                    background: parent.background,
-                    margin: parent.margin,
-                    bookTitle: parent.bookTitle,
-                    chapterTitle: parent.chapterTitle,
-                    label: "\(index + 1) / \(parent.pages.count)",
-                    showHeader: parent.showHeader,
-                    showPageNumber: parent.showPageNumber,
-                    onSelection: { [weak self] text, relativeOffset in
-                        guard let self else { return }
-                        self.parent.onSelection(text, self.parent.pages[index].location + relativeOffset)
-                    },
-                    onTap: parent.onTap
-                )
-                return hit
-            }
-            let vc = PageHostController()
+
+            let page = parent.pages[index]
+            // 按值捕获本页在章节中的偏移。若捕获 index 再回头索引 parent.pages，
+            // 换章后该下标可能已越界。
+            let pageLocation = page.location
+            let vc = cache[index] ?? PageHostController()
             vc.index = index
             vc.apply(
-                page: parent.pages[index],
+                page: page,
                 background: parent.background,
                 margin: parent.margin,
                 bookTitle: parent.bookTitle,
@@ -116,13 +141,13 @@ struct PageCurlView: UIViewControllerRepresentable {
                 label: "\(index + 1) / \(parent.pages.count)",
                 showHeader: parent.showHeader,
                 showPageNumber: parent.showPageNumber,
+                highlights: parent.highlights,
                 onSelection: { [weak self] text, relativeOffset in
-                    guard let self else { return }
-                    self.parent.onSelection(text, self.parent.pages[index].location + relativeOffset)
+                    self?.parent.onSelection(text, pageLocation + relativeOffset)
                 },
                 onTap: parent.onTap
             )
-            cache[index] = vc
+            store(vc, at: index)
             return vc
         }
 
@@ -229,13 +254,18 @@ final class PageHostController: UIViewController, UITextViewDelegate, UIGestureR
         label: String,
         showHeader: Bool,
         showPageNumber: Bool,
+        highlights: [HighlightSpan] = [],
         onSelection: @escaping (String, Int) -> Void,
         onTap: @escaping (CGFloat) -> Void
     ) {
         if !isViewLoaded { loadViewIfNeeded() }
         let bg = UIColor(Color.readerBackground(background))
         view.backgroundColor = bg
-        textView.attributedText = page.attributedText
+        textView.attributedText = Self.applyingHighlights(
+            highlights,
+            to: page.attributedText,
+            pageLocation: page.location
+        )
         textView.textContainerInset = UIEdgeInsets(
             top: 0,
             left: margin.edgeInset,
@@ -259,6 +289,31 @@ final class PageHostController: UIViewController, UITextViewDelegate, UIGestureR
         footerHeightConstraint?.constant = showPageNumber ? ReaderLayoutMetrics.footerHeight : 0
         selectionHandler = onSelection
         tapHandler = onTap
+    }
+
+    /// 把章内绝对偏移的划线换算成页内偏移并叠加底色。
+    /// 与 PageContent 的处理保持一致；无划线时直接返回原串，不做多余拷贝。
+    private static func applyingHighlights(
+        _ highlights: [HighlightSpan],
+        to text: NSAttributedString,
+        pageLocation: Int
+    ) -> NSAttributedString {
+        guard !highlights.isEmpty else { return text }
+        let pageRange = NSRange(location: pageLocation, length: text.length)
+        let mutable = NSMutableAttributedString(attributedString: text)
+        for span in highlights {
+            let intersection = NSIntersectionRange(span.range, pageRange)
+            guard intersection.length > 0 else { continue }
+            mutable.addAttribute(
+                .backgroundColor,
+                value: UIColor(span.color),
+                range: NSRange(
+                    location: intersection.location - pageLocation,
+                    length: intersection.length
+                )
+            )
+        }
+        return mutable
     }
 
     func applyBoundary(

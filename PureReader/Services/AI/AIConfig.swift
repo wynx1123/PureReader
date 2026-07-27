@@ -200,28 +200,55 @@ enum AIConfig {
         var raw = clean(value)
         while raw.hasSuffix("/") { raw.removeLast() }
         guard let url = URL(string: raw),
-              let scheme = url.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              url.host != nil
+              url.host != nil,
+              isTransportAcceptable(url)
         else { return nil }
         return url
     }
 }
 
+/// API Key 会随请求一起发出，公网必须走 HTTPS，否则密钥在链路上是明文。
+///
+/// App 级 ATS 仍为 NSAllowsArbitraryLoads（书源需要访问用户自选的任意站点，
+/// 大量书源站只有 HTTP），因此这里在代码层按路径分别把关：
+/// 书源路径继续允许 HTTP，密钥路径收紧为 HTTPS。
+///
+/// 例外：自建 / 局域网网关（Ollama、LM Studio、vLLM）走 HTTP 是常规用法，
+/// 流量不出本地网络，一刀切会误伤，故放行本机与私有网段。
+func isTransportAcceptable(_ url: URL) -> Bool {
+    guard let scheme = url.scheme?.lowercased() else { return false }
+    if scheme == "https" { return true }
+    guard scheme == "http", let host = url.host?.lowercased() else { return false }
+    return isLocalOrPrivateHost(host)
+}
+
+private func isLocalOrPrivateHost(_ host: String) -> Bool {
+    if host == "localhost" || host == "127.0.0.1" || host == "::1" { return true }
+    // Bonjour / 内网域名
+    if host.hasSuffix(".local") || host.hasSuffix(".localhost") { return true }
+
+    let parts = host.split(separator: ".").compactMap { Int($0) }
+    guard parts.count == 4, parts.allSatisfy({ (0...255).contains($0) }) else {
+        return false
+    }
+    switch (parts[0], parts[1]) {
+    case (10, _): return true                   // 10.0.0.0/8
+    case (192, 168): return true                // 192.168.0.0/16
+    case (172, 16...31): return true            // 172.16.0.0/12
+    case (127, _): return true                  // 回环
+    case (169, 254): return true                // link-local
+    default: return false
+    }
+}
+
 enum AIRewriteConstants {
     static let defaultMaxContextTokens = 3000
-    static let maxPrecedingParagraphs = 5
-    static let maxFollowingParagraphs = 3
-    static let chapterSummaryLength = 200
-    static let characterCardMaxLength = 30
     static let llmTimeout: TimeInterval = 60
-    static let streamTimeout: TimeInterval = 120
     static let maxRewriteHistory = 50
     static let maxLengthDeviation: Double = 0.5
     static let embeddingBatchSize = 16
     static let vectorTopK = 5
     static let vectorMinSimilarity: Float = 0.6
-    static let rerankTopK = 8
     static let chunkSize = 512
     static let chunkOverlap = 64
 }
@@ -326,9 +353,8 @@ enum NetworkTTSConfig {
         case .fishAudio: raw = fishBaseURL
         }
         guard let url = URL(string: clean(raw)),
-              let scheme = url.scheme?.lowercased(),
-              ["http", "https"].contains(scheme),
-              url.host != nil
+              url.host != nil,
+              isTransportAcceptable(url)
         else { return nil }
         return url
     }

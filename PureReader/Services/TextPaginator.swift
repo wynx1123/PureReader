@@ -26,12 +26,23 @@ enum TextPaginator {
 
     struct Layout: Hashable {
         var fontSize: CGFloat
+        /// 行距「倍数」（设置页滑块的 1.2~2.5），不是 pt；真正下发给排版的值见 resolvedLineSpacing。
         var lineSpacing: CGFloat
         var margin: MarginMode
         var contentSize: CGSize
         var isDark: Bool
         var showHeader: Bool
         var showPageNumber: Bool
+        /// 首行缩进字符数，随字号缩放才能在任意字号下都缩进「两个字」。
+        var firstLineIndentChars: CGFloat
+        /// 段间距相对字号的倍数，同样随字号缩放以保持视觉比例。
+        var paragraphSpacingRatio: CGFloat
+
+        /// NSParagraphStyle.lineSpacing 是「行与行之间额外增加的 pt」，
+        /// 而设置页给的是倍数，直接赋值会让 1.2~2.5 只差 1.3pt，看起来像滑块坏了。
+        var resolvedLineSpacing: CGFloat {
+            max(0, fontSize * (lineSpacing - 1))
+        }
 
         init(
             fontSize: Double,
@@ -40,7 +51,10 @@ enum TextPaginator {
             contentSize: CGSize,
             isDark: Bool,
             showHeader: Bool,
-            showPageNumber: Bool
+            showPageNumber: Bool,
+            // 新增项给默认值，避免破坏既有调用方
+            firstLineIndentChars: Double = 2,
+            paragraphSpacingRatio: Double = 0.35
         ) {
             self.fontSize = CGFloat(fontSize)
             self.lineSpacing = CGFloat(lineSpacing)
@@ -49,11 +63,9 @@ enum TextPaginator {
             self.isDark = isDark
             self.showHeader = showHeader
             self.showPageNumber = showPageNumber
+            self.firstLineIndentChars = CGFloat(max(0, firstLineIndentChars))
+            self.paragraphSpacingRatio = CGFloat(max(0, paragraphSpacingRatio))
         }
-    }
-
-    static func clearCache() {
-        // reserved
     }
 
     /// 同步分页（建议在后台队列调用）
@@ -151,7 +163,9 @@ enum TextPaginator {
     ) -> NSAttributedString {
         let font = UIFont.systemFont(ofSize: layout.fontSize)
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineSpacing = layout.lineSpacing
+        paragraph.lineSpacing = layout.resolvedLineSpacing
+        paragraph.firstLineHeadIndent = layout.fontSize * layout.firstLineIndentChars
+        paragraph.paragraphSpacing = layout.fontSize * layout.paragraphSpacingRatio
         paragraph.alignment = .justified
         paragraph.lineBreakMode = .byWordWrapping
         let color = layout.isDark ? UIColor.white : UIColor.black
@@ -191,6 +205,8 @@ enum TextPaginator {
             )
             let imageParagraph = paragraph.mutableCopy() as? NSMutableParagraphStyle
             imageParagraph?.alignment = .center
+            // 图片自成一段并居中，继承正文首行缩进会让它偏离中线
+            imageParagraph?.firstLineHeadIndent = 0
             if let imageParagraph {
                 replacement.addAttribute(
                     .paragraphStyle,

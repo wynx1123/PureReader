@@ -42,12 +42,21 @@ enum EPUBParser {
                   let raw = try? readMarkup(at: chapterURL) else {
                 continue
             }
-            let plain = stripHTML(raw).trimmingCharacters(in: .whitespacesAndNewlines)
-            if plain.isEmpty { continue }
+            let content = extractChapterContent(
+                raw,
+                chapterURL: chapterURL,
+                root: work
+            )
+            if content.text.isEmpty { continue }
             let chapterTitle = extractHTMLTitle(raw)
                 ?? chapterURL.deletingPathExtension().lastPathComponent
             chapters.append(
-                ParsedChapter(index: chapters.count, title: chapterTitle, content: plain)
+                ParsedChapter(
+                    index: chapters.count,
+                    title: chapterTitle,
+                    content: content.text,
+                    richContentData: content.richContentData
+                )
             )
         }
 
@@ -55,14 +64,15 @@ enum EPUBParser {
         if chapters.isEmpty {
             for url in listHTMLFiles(in: work) {
                 guard let raw = try? readMarkup(at: url) else { continue }
-                let plain = stripHTML(raw).trimmingCharacters(in: .whitespacesAndNewlines)
-                if plain.isEmpty { continue }
+                let content = extractChapterContent(raw, chapterURL: url, root: work)
+                if content.text.isEmpty { continue }
                 chapters.append(
                     ParsedChapter(
                         index: chapters.count,
                         title: extractHTMLTitle(raw)
                             ?? url.deletingPathExtension().lastPathComponent,
-                        content: plain
+                        content: content.text,
+                        richContentData: content.richContentData
                     )
                 )
             }
@@ -76,6 +86,7 @@ enum EPUBParser {
             format: .epub,
             chapters: chapters,
             coverImageData: findCoverImage(
+                opf: opfXML,
                 opfDirectory: opfDirectory,
                 manifest: manifest,
                 root: work
@@ -326,6 +337,129 @@ enum EPUBParser {
         return text
     }
 
+    private struct ExtractedChapterContent {
+        var text: String
+        var richContentData: Data?
+    }
+
+    private struct ImageCandidate {
+        var token: String
+        var data: Data?
+        var altText: String
+    }
+
+    private static func extractChapterContent(
+        _ html: String,
+        chapterURL: URL,
+        root: URL
+    ) -> ExtractedChapterContent {
+        guard let expression = try? NSRegularExpression(
+            pattern: #"<(?:img|image)\b[^>]*>"#,
+            options: [.caseInsensitive]
+        ) else {
+            return ExtractedChapterContent(
+                text: stripHTML(html).trimmingCharacters(in: .whitespacesAndNewlines),
+                richContentData: nil
+            )
+        }
+
+        let nsHTML = html as NSString
+        let matches = expression.matches(
+            in: html,
+            range: NSRange(location: 0, length: nsHTML.length)
+        )
+        var candidates: [ImageCandidate] = []
+        candidates.reserveCapacity(matches.count)
+
+        for (index, match) in matches.enumerated() {
+            let tag = nsHTML.substring(with: match.range)
+            let source = attr(tag, "src")
+                ?? attr(tag, "href")
+                ?? attr(tag, "xlink:href")
+            let alt = decodeHTMLEntities(attr(tag, "alt") ?? "")
+            let data = source.flatMap {
+                loadInlineImage(
+                    source: $0,
+                    relativeTo: chapterURL.deletingLastPathComponent(),
+                    root: root
+                )
+            }
+            candidates.append(
+                ImageCandidate(
+                    token: "[[PURE_READER_EPUB_IMAGE_\(index)]]",
+                    data: data,
+                    altText: alt
+                )
+            )
+        }
+
+        let taggedHTML = NSMutableString(string: html)
+        for (match, candidate) in zip(matches, candidates).reversed() {
+            taggedHTML.replaceCharacters(
+                in: match.range,
+                with: "\n\n\(candidate.token)\n\n"
+            )
+        }
+
+        var text = stripHTML(taggedHTML as String)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var images: [ChapterInlineImage] = []
+
+        for candidate in candidates {
+            let range = (text as NSString).range(of: candidate.token)
+            guard range.location != NSNotFound else { continue }
+            if let data = candidate.data {
+                text = (text as NSString).replacingCharacters(
+                    in: range,
+                    with: ChapterRichContent.imagePlaceholder
+                )
+                images.append(
+                    ChapterInlineImage(
+                        utf16Location: range.location,
+                        data: data,
+                        altText: candidate.altText
+                    )
+                )
+            } else {
+                text = (text as NSString).replacingCharacters(
+                    in: range,
+                    with: candidate.altText
+                )
+            }
+        }
+
+        let richData = images.isEmpty
+            ? nil
+            : ChapterRichContent(images: images).encoded()
+        return ExtractedChapterContent(text: text, richContentData: richData)
+    }
+
+    private static func loadInlineImage(
+        source rawSource: String,
+        relativeTo base: URL,
+        root: URL
+    ) -> Data? {
+        let source = decodeHTMLEntities(rawSource)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if source.lowercased().hasPrefix("data:") {
+            guard let comma = source.firstIndex(of: ",") else { return nil }
+            let metadata = source[..<comma].lowercased()
+            let rawPayload = String(source[source.index(after: comma)...])
+            let payload = rawPayload.removingPercentEncoding ?? rawPayload
+            let data = metadata.contains(";base64")
+                ? Data(base64Encoded: payload, options: .ignoreUnknownCharacters)
+                : payload.data(using: .utf8)
+            guard let data, UIImage(data: data) != nil else { return nil }
+            return data
+        }
+
+        guard let url = resolvedURL(source, relativeTo: base, root: root),
+              let data = try? Data(contentsOf: url, options: [.mappedIfSafe]),
+              UIImage(data: data) != nil
+        else { return nil }
+        return data
+    }
+
     private static func decodeHTMLEntities(_ input: String) -> String {
         var result = input
         let named: [(String, String)] = [
@@ -395,14 +529,38 @@ enum EPUBParser {
     }
 
     private static func findCoverImage(
+        opf: String,
         opfDirectory: URL,
         manifest: [String: String],
         root: URL
     ) -> Data? {
-        for href in manifest.values {
+        var candidates: [String] = []
+        if let expression = try? NSRegularExpression(
+            pattern: #"<item\b[^>]*\bproperties\s*=\s*(["'])[^"']*\bcover-image\b[^"']*\1[^>]*>"#,
+            options: [.caseInsensitive]
+        ), let match = expression.firstMatch(
+            in: opf,
+            range: NSRange(opf.startIndex..., in: opf)
+        ) {
+            let tag = (opf as NSString).substring(with: match.range)
+            if let href = attr(tag, "href") { candidates.append(href) }
+        }
+        if let coverID = legacyCoverID(in: opf),
+           let href = manifest[coverID] {
+            candidates.append(href)
+        }
+        // manifest 是字典，values 的遍历顺序不保证；不排序的话同一本书两次导入
+        // 可能选到不同封面。按 manifest id 排序以获得确定结果。
+        candidates.append(
+            contentsOf: manifest
+                .filter { $0.value.lowercased().contains("cover") }
+                .sorted { $0.key < $1.key }
+                .map(\.value)
+        )
+
+        for href in candidates {
             let lowercased = href.lowercased()
-            guard lowercased.contains("cover"),
-                  ["jpg", "jpeg", "png", "webp"].contains(
+            guard ["jpg", "jpeg", "png", "webp", "gif"].contains(
                     URL(fileURLWithPath: lowercased).pathExtension
                   ),
                   let url = resolvedURL(href, relativeTo: opfDirectory, root: root),
@@ -426,6 +584,27 @@ enum EPUBParser {
                let data = try? Data(contentsOf: url),
                UIImage(data: data) != nil {
                 return data
+            }
+        }
+        return nil
+    }
+
+    private static func legacyCoverID(in opf: String) -> String? {
+        guard let expression = try? NSRegularExpression(
+            pattern: #"<meta\b[^>]*>"#,
+            options: [.caseInsensitive]
+        ) else { return nil }
+
+        let ns = opf as NSString
+        for match in expression.matches(
+            in: opf,
+            range: NSRange(location: 0, length: ns.length)
+        ) {
+            let tag = ns.substring(with: match.range)
+            if attr(tag, "name")?.lowercased() == "cover",
+               let content = attr(tag, "content"),
+               !content.isEmpty {
+                return content
             }
         }
         return nil

@@ -17,6 +17,7 @@ actor BookVectorIndex {
         var bookID: String
         var model: String
         var dimensions: Int
+        var baseURL: String?
         var entries: [VectorEntry]
         var builtAt: Date
     }
@@ -32,7 +33,9 @@ actor BookVectorIndex {
         guard FileManager.default.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url),
               let payload = try? JSONDecoder().decode(DiskPayload.self, from: data),
-              payload.model == AIConfig.embeddingModel
+              payload.model == AIConfig.embeddingModel,
+              payload.dimensions == AIConfig.embeddingDimensions,
+              payload.baseURL == AIConfig.embeddingBaseURL
         else {
             return false
         }
@@ -47,6 +50,7 @@ actor BookVectorIndex {
             bookID: bookID.uuidString,
             model: AIConfig.embeddingModel,
             dimensions: AIConfig.embeddingDimensions,
+            baseURL: AIConfig.embeddingBaseURL,
             entries: entries,
             builtAt: Date()
         )
@@ -141,10 +145,15 @@ actor BookVectorIndex {
         scored.reserveCapacity(entries.count)
 
         for entry in entries {
+            // 检索的目的是补充"别处"的设定。当前章的内容改写时已经作为前后文完整送入，
+            // 再作为"全书相关设定"返回既浪费预算，也会把即将被替换的原文喂回模型。
             if let ex = excludeChapterIndex, entry.chapterIndex == ex {
-                if let needle = excludeText, entry.text.contains(String(needle.prefix(40))) {
-                    continue
-                }
+                continue
+            }
+            if let needle = excludeText,
+               !needle.isEmpty,
+               entry.text.contains(String(needle.prefix(40))) {
+                continue
             }
             let sim = VectorMath.cosineSimilarity(queryVector, entry.embedding)
             if sim >= minSimilarity {
@@ -217,7 +226,8 @@ enum IndexingMode: Sendable {
     static func determine(wordCount: Int) -> IndexingMode {
         switch wordCount {
         case Int.min...0: return .skip
-        case 1..<500_000: return .fullAsync
+        case 1..<25_000: return .skip
+        case 25_000..<500_000: return .fullAsync
         default: return .slimAsync
         }
     }

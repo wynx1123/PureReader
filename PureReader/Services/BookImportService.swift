@@ -8,22 +8,6 @@ enum BookImportService {
 
     // MARK: - Public parse
 
-    /// 从 fileImporter / 分享扩展等安全作用域 URL 导入。
-    /// 独立调用时由本方法取得 scope；标准 UI 流程会在 completion 取得 scope，
-    /// 再通过后台协调读取完成暂存。
-    static func parseLocalFile(url: URL) async throws -> ParsedBook {
-        let accessed = url.startAccessingSecurityScopedResource()
-        defer {
-            if accessed { url.stopAccessingSecurityScopedResource() }
-        }
-        let sandboxURL = try await stageSecurityScopedFileAsync(url)
-        defer { try? FileManager.default.removeItem(at: sandboxURL) }
-        return try await parseStagedFile(
-            url: sandboxURL,
-            originalFilename: url.lastPathComponent
-        )
-    }
-
     /// 在后台暂存到 App Caches。调用方必须在整个 await 期间保持 security scope。
     static func stageSecurityScopedFileAsync(_ url: URL) async throws -> URL {
         try await Task.detached(priority: .userInitiated) {
@@ -227,61 +211,6 @@ enum BookImportService {
         return try TXTParser.parse(data: data, preferredTitle: name)
     }
 
-    // MARK: - Security-scoped copy
-
-    /// 将 fileImporter 返回的 URL 复制到 Caches/Imports，避免权限丢失。
-    /// `acquireSecurityScope` 仅供非 fileImporter 调用；标准流程必须在 completion 当下获取 scope。
-    static func copyToSandbox(_ url: URL, acquireSecurityScope: Bool = true) async throws -> URL {
-        try await Task.detached(priority: .userInitiated) {
-            let accessed = acquireSecurityScope ? url.startAccessingSecurityScopedResource() : false
-            defer {
-                if accessed { url.stopAccessingSecurityScopedResource() }
-            }
-
-            let fm = FileManager.default
-            let dir = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
-                .appendingPathComponent("Imports", isDirectory: true)
-            try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
-
-            var name = url.lastPathComponent
-            if name.isEmpty { name = "import.bin" }
-            // 保留扩展名
-            let dest = dir.appendingPathComponent("\(UUID().uuidString)_\(name)")
-
-            // 若协调器需要
-            var coordError: NSError?
-            var copyError: Error?
-            let coordinator = NSFileCoordinator(filePresenter: nil)
-            coordinator.coordinate(readingItemAt: url, options: [], error: &coordError) { newURL in
-                do {
-                    if fm.fileExists(atPath: dest.path) {
-                        try fm.removeItem(at: dest)
-                    }
-                    try fm.copyItem(at: newURL, to: dest)
-                } catch {
-                    copyError = error
-                }
-            }
-            if let coordError { throw ImportError.accessDenied(coordError.localizedDescription) }
-            if let copyError {
-                // 回退直接 Data 读写
-                do {
-                    let data = try Data(contentsOf: url)
-                    if data.isEmpty { throw ImportError.emptyFile }
-                    try data.write(to: dest, options: .atomic)
-                } catch let e as ImportError {
-                    throw e
-                } catch {
-                    throw ImportError.accessDenied(copyError.localizedDescription)
-                }
-            }
-            guard fm.fileExists(atPath: dest.path) else {
-                throw ImportError.accessDenied(String(localized: "无法访问所选文件"))
-            }
-            return dest
-        }.value
-    }
-
     private static func downloadWithRetry(_ request: URLRequest) async throws -> (Data, URLResponse) {
         var lastError: Error?
         for attempt in 0..<3 {
@@ -334,7 +263,8 @@ enum BookImportService {
             let ch = Chapter(
                 index: normalizedIndex,
                 title: pc.title.isEmpty ? String(localized: "第 \(normalizedIndex + 1) 章") : pc.title,
-                content: pc.content.isEmpty ? " " : pc.content
+                content: pc.content.isEmpty ? " " : pc.content,
+                richContentData: pc.richContentData
             )
             ch.book = book
             chapterModels.append(ch)
@@ -387,6 +317,9 @@ enum BookImportService {
         }
         context.delete(book)
         try context.save()
+        // 向量索引与记忆锚点在 Application Support 下，SwiftData 不会级联删除；
+        // 长篇的索引可达数十 MB，不清理会永久残留并被 iCloud 备份。
+        BookUnderstandingCoordinator.shared.purge(bookID: bid)
     }
 
     /// 导出全书为 TXT（含改写后正文）
@@ -402,24 +335,49 @@ enum BookImportService {
         for ch in chapters {
             parts.append(ch.title)
             parts.append("")
-            parts.append(ch.content)
+            parts.append(ch.content.replacingOccurrences(
+                of: ChapterRichContent.imagePlaceholder,
+                with: ""
+            ))
             parts.append("")
             parts.append("--------")
             parts.append("")
         }
         let text = parts.joined(separator: "\n")
         let dir = FileManager.default.temporaryDirectory
-        let safe = book.title
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: ":", with: "_")
-        let url = dir.appendingPathComponent("\(safe).txt")
+            .appendingPathComponent("Exports", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("\(exportFilename(for: book.title)).txt")
         try text.write(to: url, atomically: true, encoding: .utf8)
         return url
     }
 
+    /// 书名来自 EPUB 的 dc:title 等文件内容，完全不可信。
+    /// 白名单化字符（黑名单挡不住 `..`、NUL、RTL override 等），并追加短 UUID 避免同名覆盖。
+    private static func exportFilename(for title: String) -> String {
+        let allowed = CharacterSet.alphanumerics
+            .union(CharacterSet(charactersIn: " -_()[]（）【】"))
+        var sanitized = String(
+            title.unicodeScalars
+                .map { allowed.contains($0) || $0.value > 0x2FFF ? Character($0) : "_" }
+                .prefix(60)
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // 全为下划线、以点开头，或退化成 "." / ".." 时一律回退到固定名。
+        if sanitized.isEmpty
+            || sanitized.hasPrefix(".")
+            || sanitized.allSatisfy({ $0 == "_" }) {
+            sanitized = String(localized: "未命名")
+        }
+        return "\(sanitized)-\(UUID().uuidString.prefix(8))"
+    }
+
     /// fileImporter 允许的类型（尽量宽，避免选不到文件）
     static var allowedContentTypes: [UTType] {
+        let epubType = UTType("org.idpf.epub-container")
+            ?? UTType(importedAs: "org.idpf.epub-container", conformingTo: .data)
         var types: [UTType] = [
+            epubType,
             .item,
             .data,
             .content,

@@ -197,6 +197,27 @@ enum BookMemoryAnchorStore {
             try? encoded.write(to: url, options: .atomic)
         }
     }
+
+    /// 是否存在被改写标脏、尚未重新摘要的批次。
+    /// 有脏批次时锚点已经过时，需要在下次后台消化时重建。
+    static func hasDirtyBatches(bookID: UUID) -> Bool {
+        let dir = directory(for: bookID)
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else {
+            return false
+        }
+        for name in names where name.hasPrefix("batch_") && name.hasSuffix(".json") {
+            guard let data = try? Data(contentsOf: dir.appendingPathComponent(name)),
+                  let cache = try? JSONDecoder().decode(BatchCache.self, from: data)
+            else { continue }
+            if cache.dirty { return true }
+        }
+        return false
+    }
+
+    /// 删除某本书的全部记忆锚点与批次缓存（删书时调用）。
+    static func removeAll(bookID: UUID) {
+        try? FileManager.default.removeItem(at: directory(for: bookID))
+    }
 }
 
 struct BatchCache: Codable, Sendable {

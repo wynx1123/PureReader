@@ -1,9 +1,14 @@
 import SwiftUI
+import SwiftData
 
 /// 添加书籍：触发根视图上的 fileImporter / URL sheet（不在此嵌套文件选择器）
 struct AddBookSheet: View {
     @Bindable var viewModel: BookshelfViewModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
+    @Query private var preferences: [ShelfPreferences]
+
+    private var customGroups: [String] { preferences.first?.customGroups ?? [] }
 
     var body: some View {
         NavigationStack {
@@ -35,17 +40,21 @@ struct AddBookSheet: View {
                     Text(String(localized: "文件选择器在主界面打开，可多选。支持 UTF-8 / GBK TXT 与标准 EPUB。"))
                 }
 
-                Section(String(localized: "元数据（导入后应用）")) {
-                    Picker(String(localized: "分组"), selection: $viewModel.pendingGroup) {
-                        ForEach(BuiltInGroup.all, id: \.self) { name in
-                            Text(name).tag(name)
-                        }
-                    }
+                Section {
+                    GroupPicker(
+                        selection: $viewModel.pendingGroup,
+                        customGroups: customGroups,
+                        onCreate: { viewModel.createGroup($0, context: modelContext) }
+                    )
                     TextField(
                         String(localized: "标签（逗号分隔）"),
                         text: $viewModel.pendingTags
                     )
                     .textInputAutocapitalization(.never)
+                } header: {
+                    Text(String(localized: "元数据（导入后应用）"))
+                } footer: {
+                    Text(String(localized: "仅对本次导入生效，导入完成后会自动清空。"))
                 }
 
                 if viewModel.isImporting {

@@ -11,6 +11,8 @@ final class Book {
     var sourceTypeRaw: String
     var sourceName: String?
     var sourceURL: String?
+    /// ID of the online source used for lazy chapter downloads.
+    var bookSourceID: UUID? = nil
     /// App 沙盒内相对路径（Books/<uuid>/...）
     var filePath: String?
     var formatRaw: String
@@ -60,6 +62,7 @@ final class Book {
         sourceType: SourceType = .local,
         sourceName: String? = nil,
         sourceURL: String? = nil,
+        bookSourceID: UUID? = nil,
         filePath: String? = nil,
         format: BookFormat = .txt,
         totalChapters: Int = 0,
@@ -79,6 +82,7 @@ final class Book {
         self.sourceTypeRaw = sourceType.rawValue
         self.sourceName = sourceName
         self.sourceURL = sourceURL
+        self.bookSourceID = bookSourceID
         self.filePath = filePath
         self.formatRaw = format.rawValue
         self.totalChapters = totalChapters
@@ -100,18 +104,26 @@ final class Chapter {
     var title: String
     /// 正文可能很大，走外部存储
     @Attribute(.externalStorage) var content: String
+    /// EPUB 正文图片的位置与原始数据。
+    @Attribute(.externalStorage) var richContentData: Data?
+    /// Original online chapter URL used for on-demand content loading.
+    var sourceURL: String? = nil
     var book: Book?
 
     init(
         id: UUID = UUID(),
         index: Int,
         title: String,
-        content: String = ""
+        content: String = "",
+        richContentData: Data? = nil,
+        sourceURL: String? = nil
     ) {
         self.id = id
         self.index = index
         self.title = title
         self.content = content
+        self.richContentData = richContentData
+        self.sourceURL = sourceURL
     }
 }
 
@@ -140,8 +152,25 @@ final class ReadingSettings {
     var pageMarginRaw: String
     var backgroundColorRaw: String
     var pageTurnModeRaw: String
+    var showHeader: Bool = true
+    var showPageNumber: Bool = true
     var ttsRate: Double
+    var ttsProviderRaw: String = TTSProvider.system.rawValue
     var ttsVoice: String
+
+    // 以下字段均带默认值，SwiftData 才能对存量库做轻量迁移。
+    /// 阅读时禁用自动锁屏。
+    var keepScreenOn: Bool = false
+    /// 应用内阅读亮度覆盖；<0 表示跟随系统、不接管。
+    var brightnessOverride: Double = -1
+    /// 段落首行缩进（字符数，按当前字号换算）。
+    var firstLineIndentChars: Double = 2
+    /// 段间距（相对字号的倍数）。
+    var paragraphSpacingRatio: Double = 0.35
+    /// 听书睡眠定时：分钟数；0 = 关闭。
+    var sleepTimerMinutes: Int = 0
+    /// 听书睡眠定时：读完本章即停。
+    var sleepAfterChapter: Bool = false
 
     var pageMargin: MarginMode {
         get { MarginMode(rawValue: pageMarginRaw) ?? .normal }
@@ -158,22 +187,102 @@ final class ReadingSettings {
         set { pageTurnModeRaw = newValue.rawValue }
     }
 
+    var ttsProvider: TTSProvider {
+        get { TTSProvider(rawValue: ttsProviderRaw) ?? .system }
+        set { ttsProviderRaw = newValue.rawValue }
+    }
+
     init(
         fontSize: Double = 18,
         lineSpacing: Double = 1.6,
         pageMargin: MarginMode = .normal,
         backgroundColor: BackgroundType = .cream,
         pageTurnMode: PageTurnMode = .scroll,
+        showHeader: Bool = true,
+        showPageNumber: Bool = true,
         ttsRate: Double = 0.5,
-        ttsVoice: String = ""
+        ttsProvider: TTSProvider = .system,
+        ttsVoice: String = "",
+        keepScreenOn: Bool = false,
+        brightnessOverride: Double = -1,
+        firstLineIndentChars: Double = 2,
+        paragraphSpacingRatio: Double = 0.35,
+        sleepTimerMinutes: Int = 0,
+        sleepAfterChapter: Bool = false
     ) {
         self.fontSize = fontSize
         self.lineSpacing = lineSpacing
         self.pageMarginRaw = pageMargin.rawValue
         self.backgroundColorRaw = backgroundColor.rawValue
         self.pageTurnModeRaw = pageTurnMode.rawValue
+        self.showHeader = showHeader
+        self.showPageNumber = showPageNumber
         self.ttsRate = ttsRate
+        self.ttsProviderRaw = ttsProvider.rawValue
         self.ttsVoice = ttsVoice
+        self.keepScreenOn = keepScreenOn
+        self.brightnessOverride = brightnessOverride
+        self.firstLineIndentChars = firstLineIndentChars
+        self.paragraphSpacingRatio = paragraphSpacingRatio
+        self.sleepTimerMinutes = sleepTimerMinutes
+        self.sleepAfterChapter = sleepAfterChapter
+    }
+}
+
+/// 书签与划线。
+///
+/// 用章内 UTF-16 偏移定位，与 `Book.currentPageOffset`、`ReaderPage.location`
+/// 同一套坐标系，可直接经 `TextPaginator.pageIndex(forCharacterOffset:in:)` 换算成页。
+@Model
+final class Bookmark {
+    var id: UUID
+    var bookID: UUID
+    var chapterID: UUID
+    var chapterIndex: Int
+    var chapterTitle: String
+    /// 章内 UTF-16 起始偏移。
+    var utf16Location: Int
+    /// 选区长度；0 表示这是一个位置书签而非划线。
+    var utf16Length: Int
+    /// 摘录的原文，用于列表展示与原文漂移后的重定位。
+    var excerpt: String
+    /// 用户笔记，可空。
+    var note: String = ""
+    /// 划线颜色标识；位置书签忽略此字段。
+    var colorRaw: String = HighlightColor.yellow.rawValue
+    var createdAt: Date
+
+    var isHighlight: Bool { utf16Length > 0 }
+
+    var color: HighlightColor {
+        get { HighlightColor(rawValue: colorRaw) ?? .yellow }
+        set { colorRaw = newValue.rawValue }
+    }
+
+    init(
+        id: UUID = UUID(),
+        bookID: UUID,
+        chapterID: UUID,
+        chapterIndex: Int,
+        chapterTitle: String,
+        utf16Location: Int,
+        utf16Length: Int = 0,
+        excerpt: String = "",
+        note: String = "",
+        color: HighlightColor = .yellow,
+        createdAt: Date = Date()
+    ) {
+        self.id = id
+        self.bookID = bookID
+        self.chapterID = chapterID
+        self.chapterIndex = chapterIndex
+        self.chapterTitle = chapterTitle
+        self.utf16Location = utf16Location
+        self.utf16Length = utf16Length
+        self.excerpt = excerpt
+        self.note = note
+        self.colorRaw = color.rawValue
+        self.createdAt = createdAt
     }
 }
 

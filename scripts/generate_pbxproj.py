@@ -10,6 +10,10 @@ SRC = ROOT / "PureReader"
 PROJ = ROOT / "PureReader.xcodeproj"
 OUT = PROJ / "project.pbxproj"
 
+# Some community sources in the supported XIU2/Yuedu collection are HTTP-only.
+# ATS exceptions are narrowly scoped to those exact hosts in PureReader/Info.plist.
+# Do not replace them with a global NSAllowsArbitraryLoads exception.
+# API-key services still enforce HTTPS in code; see AIConfig.isTransportAcceptable.
 BUNDLE_ID = "com.wynx.PureReader"
 DISPLAY_NAME = "纯享阅读"
 DEPLOY = "17.0"
@@ -262,8 +266,8 @@ def main() -> None:
 				CURRENT_PROJECT_VERSION = {BUILD};
 				DEVELOPMENT_TEAM = "";
 				ENABLE_PREVIEWS = YES;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "{DISPLAY_NAME}";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = PureReader/Info.plist;
 				INFOPLIST_KEY_LSRequiresIPhoneOS = YES;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIBackgroundModes = "audio";

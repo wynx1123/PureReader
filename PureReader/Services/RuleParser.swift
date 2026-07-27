@@ -58,7 +58,9 @@ enum RuleParser {
     private static func evaluateSingle(content: String, rule: String, baseURL: URL?) -> String? {
         let (extractionRule, replacement) = splitExtractionAndReplacement(rule)
         let value: String?
-        if extractionRule.hasPrefix("$.") || extractionRule.hasPrefix("$[") {
+        if extractionRule.contains("{{"), extractionRule.contains("}}") {
+            value = renderJSONTemplate(content: content, template: extractionRule)
+        } else if extractionRule.hasPrefix("$.") || extractionRule.hasPrefix("$[") {
             value = jsonString(content: content, path: extractionRule)
         } else if extractionRule.hasPrefix("##") {
             value = regexFirst(content: content, rule: extractionRule)
@@ -84,8 +86,6 @@ enum RuleParser {
     }
 
     private static func normalizeLegadoRule(_ rule: String) -> String {
-        // Legado 允许用 `@css:` / `@json:` 显式声明规则类型。必须先剥掉，
-        // 否则按 "@" 切分后首段为空，选择器会变成空串而永不匹配。
         var working = rule.trimmingCharacters(in: .whitespaces)
         for prefix in ["@css:", "@CSS:", "@json:", "@JSON:"] where working.hasPrefix(prefix) {
             working = String(working.dropFirst(prefix.count))
@@ -93,37 +93,59 @@ enum RuleParser {
             break
         }
 
-        // Legado 的 `sel!0` / `sel!1` 是"排除第 n 个匹配"，本引擎不支持按下标排除，
-        // 退化为取全部匹配（宁可多给，也好过一个都取不到）。
-        if let bang = working.firstIndex(of: "!") {
-            let suffix = working[working.index(after: bang)...]
-            if suffix.allSatisfy({ $0.isNumber || $0 == ":" || $0 == "," }) {
-                working = String(working[..<bang])
+        // Legado chains selectors with "@": #author@tbody@tr!0 and
+        // class.item.0@tag.a.0@href. Keep the final known extraction token
+        // as the attribute and translate the preceding parts to descendant CSS.
+        var components = working.components(separatedBy: "@").filter { !$0.isEmpty }
+        guard !components.isEmpty else { return working }
+        let knownAttributes: Set<String> = [
+            "text", "textnodes", "html", "href", "src", "onclick",
+            "data-src", "data-original", "title", "alt", "content", "value"
+        ]
+        var attribute: String?
+        if let last = components.last, knownAttributes.contains(last.lowercased()) {
+            attribute = components.removeLast()
+        }
+        let selectors = components.compactMap(normalizeLegadoSelector)
+        guard !selectors.isEmpty else { return working }
+        let selector = selectors.joined(separator: " ")
+        return attribute.map { selector + "@" + $0 } ?? selector
+    }
+
+    private static func normalizeLegadoSelector(_ raw: String) -> String? {
+        var selector = raw.trimmingCharacters(in: .whitespaces)
+        guard !selector.isEmpty else { return nil }
+
+        // Positional suffixes are hints to Legado. The lightweight parser
+        // currently returns the first match, so preserve the selector and drop
+        // only the index suffix instead of accidentally turning `.odd.0` into tag `odd`.
+        selector = selector.replacingOccurrences(
+            of: #"\.(?:-?\d+|\d*:\d*)$"#,
+            with: "",
+            options: .regularExpression
+        )
+        selector = selector.replacingOccurrences(
+            of: #"\[(?:-?\d+|\d*:\d*)\]$"#,
+            with: "",
+            options: .regularExpression
+        )
+        if let bang = selector.lastIndex(of: "!") {
+            let suffix = selector[selector.index(after: bang)...]
+            if suffix.allSatisfy({ $0.isNumber || $0 == "-" || $0 == ":" || $0 == "," }) {
+                selector = String(selector[..<bang])
             }
         }
 
-        let components = working.components(separatedBy: "@")
-        guard let rawSelector = components.first, !rawSelector.isEmpty else { return working }
-        let rawAttribute = components.count > 1 ? components.last : nil
-        let selectorParts = rawSelector.split(separator: ".").map(String.init)
-        var selector = rawSelector
-        if selectorParts.count >= 2 {
-            switch selectorParts[0].lowercased() {
-            case "class": selector = "." + selectorParts[1]
-            case "id": selector = "#" + selectorParts[1]
-            case "tag": selector = selectorParts[1]
-            default:
-                if Int(selectorParts.last ?? "") != nil {
-                    selector = selectorParts.dropLast().joined(separator: ".")
-                }
+        let parts = selector.split(separator: ".").map(String.init)
+        if parts.count >= 2 {
+            switch parts[0].lowercased() {
+            case "class": return "." + parts[1]
+            case "id": return "#" + parts[1]
+            case "tag": return parts[1]
+            default: break
             }
         }
-        guard let attribute = rawAttribute,
-              ["text", "textnodes", "html", "href", "src", "onclick"]
-                .contains(attribute.lowercased()) else {
-            return selector
-        }
-        return selector + "@" + attribute
+        return selector
     }
 
     private static func splitExtractionAndReplacement(_ rule: String) -> (String, String?) {
@@ -146,6 +168,27 @@ enum RuleParser {
     }
 
     // MARK: - JSON
+
+    private static func renderJSONTemplate(content: String, template: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: #"\{\{(\$[^}]+)\}\}"#) else {
+            return nil
+        }
+        let matches = regex.matches(
+            in: template,
+            range: NSRange(template.startIndex..., in: template)
+        )
+        guard !matches.isEmpty else { return template }
+        var result = template
+        for match in matches.reversed() {
+            guard let fullRange = Range(match.range(at: 0), in: result),
+                  let pathRange = Range(match.range(at: 1), in: result),
+                  let value = jsonString(content: content, path: String(result[pathRange])) else {
+                continue
+            }
+            result.replaceSubrange(fullRange, with: value)
+        }
+        return result.contains("{{") ? nil : result
+    }
 
     private static func jsonString(content: String, path: String) -> String? {
         guard let data = content.data(using: .utf8),

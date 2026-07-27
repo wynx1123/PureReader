@@ -62,8 +62,15 @@ enum BookSourceEngine {
         let c = URLSessionConfiguration.ephemeral
         c.timeoutIntervalForRequest = 15
         c.timeoutIntervalForResource = 30
+        c.requestCachePolicy = .reloadIgnoringLocalAndRemoteCacheData
+        c.httpShouldSetCookies = true
+        c.httpCookieAcceptPolicy = .always
         c.httpAdditionalHeaders = [
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 PureReader/1.0"
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 PureReader/1.0",
+            // A few older book-source servers advertise broken gzip/br encodings.
+            // Asking for identity avoids CFNetwork decode/parse failures (often code 303).
+            "Accept-Encoding": "identity",
+            "Accept-Language": "zh-CN,zh-Hans;q=0.9,en;q=0.5"
         ]
         return URLSession(configuration: c)
     }()
@@ -477,9 +484,11 @@ enum BookSourceEngine {
 
     private static func fetchString(request initialRequest: URLRequest) async throws -> String {
         var lastError: Error = BookSourceError.network
+        var activeRequest = initialRequest
+        var didTryHTTPFallback = false
         for attempt in 0..<3 {
             do {
-                var request = initialRequest
+                var request = activeRequest
                 request.timeoutInterval = 15
                 let (data, response) = try await session.data(for: request)
                 if verificationChallenge(data: data, response: response, fallbackURL: request.url) {
@@ -494,14 +503,70 @@ enum BookSourceEngine {
                     return s
                 }
                 return String(decoding: data, as: UTF8.self)
+            } catch let error as BookSourceError {
+                // Verification and HTTP status errors are deterministic; retrying only delays the prompt.
+                throw error
             } catch {
                 lastError = error
+                if !didTryHTTPFallback,
+                   let fallback = httpFallbackRequest(for: activeRequest, after: error) {
+                    activeRequest = fallback
+                    didTryHTTPFallback = true
+                    continue
+                }
+                if isBrowserRecoverableNetworkError(error), let url = activeRequest.url {
+                    throw BookSourceError.verificationRequired(url)
+                }
                 if attempt < 2 {
                     try? await Task.sleep(nanoseconds: UInt64(300_000_000 * (attempt + 1)))
                 }
             }
         }
         throw lastError
+    }
+
+    /// Some long-lived community sources still publish an HTTPS URL with an expired,
+    /// untrusted, or malformed TLS endpoint while their HTTP endpoint remains usable
+    /// (and may redirect to the site's current HTTPS host). For book-source traffic only,
+    /// retry the same request over HTTP after a transport-level TLS/parser failure.
+    private static func httpFallbackRequest(
+        for request: URLRequest,
+        after error: Error
+    ) -> URLRequest? {
+        guard request.url?.scheme?.lowercased() == "https",
+              isTLSOrHTTPParseError(error),
+              var components = request.url.flatMap({ URLComponents(url: $0, resolvingAgainstBaseURL: false) }) else {
+            return nil
+        }
+        components.scheme = "http"
+        guard let url = components.url else { return nil }
+        var fallback = request
+        fallback.url = url
+        return fallback
+    }
+
+    private static func isTLSOrHTTPParseError(_ error: Error) -> Bool {
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain {
+            return [
+                NSURLErrorSecureConnectionFailed,
+                NSURLErrorServerCertificateHasBadDate,
+                NSURLErrorServerCertificateUntrusted,
+                NSURLErrorServerCertificateHasUnknownRoot,
+                NSURLErrorServerCertificateNotYetValid,
+                NSURLErrorClientCertificateRejected,
+                NSURLErrorClientCertificateRequired
+            ].contains(ns.code)
+        }
+        // kCFErrorHTTPParseFailure. Several anti-bot gateways return malformed
+        // interim responses that URLSession rejects before exposing a status code.
+        return ns.domain == "kCFErrorDomainCFNetwork" && ns.code == 303
+    }
+
+    private static func isBrowserRecoverableNetworkError(_ error: Error) -> Bool {
+        let ns = error as NSError
+        return (ns.domain == "kCFErrorDomainCFNetwork" && ns.code == 303)
+            || (ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCannotParseResponse)
     }
 
     private static func verificationURL(from error: Error) -> URL? {
@@ -521,7 +586,8 @@ enum BookSourceEngine {
         let text = String(decoding: sample, as: UTF8.self).lowercased()
         let markers = [
             "captcha", "cf-chl-", "challenge-platform", "verify you are human",
-            "geetest", "__jsl_clearance", "\u{4eba}\u{673a}\u{9a8c}\u{8bc1}", "\u{6ed1}\u{52a8}\u{9a8c}\u{8bc1}", "\u{8bbf}\u{95ee}\u{9a8c}\u{8bc1}", "\u{5b89}\u{5168}\u{9a8c}\u{8bc1}"
+            "geetest", "__jsl_clearance", "_wa_=", "http-equiv=refresh content=0",
+            "\u{4eba}\u{673a}\u{9a8c}\u{8bc1}", "\u{6ed1}\u{52a8}\u{9a8c}\u{8bc1}", "\u{8bbf}\u{95ee}\u{9a8c}\u{8bc1}", "\u{5b89}\u{5168}\u{9a8c}\u{8bc1}"
         ]
         return markers.contains { text.contains($0) } && (response.url ?? fallbackURL) != nil
     }

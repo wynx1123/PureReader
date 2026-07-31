@@ -43,8 +43,9 @@ struct PureReaderApp: App {
         }
 
         // 启动时执行一次性初始化
+        let container = modelContainer
         Task { @MainActor in
-            let context = modelContainer.mainContext
+            let context = container.mainContext
             BookSourceImporter.seedBuiltInIfNeeded(context: context)
             DownloadManager.shared.restoreTasks(context: context)
         }

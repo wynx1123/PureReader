@@ -257,22 +257,3 @@ private extension CacheIntegrityService {
         return url
     }
 }
-
-// MARK: - OnlineLibraryService extension
-
-extension OnlineLibraryService {
-    /// 公开缓存 URL 解析方法，供缓存完整性检查使用。
-    static func cacheURL(relativePath: String) throws -> URL {
-        let base = try applicationSupportDirectory().standardizedFileURL
-        let target = base.appendingPathComponent(relativePath).standardizedFileURL
-        guard target.path.hasPrefix(base.path + "/") else { throw CocoaError(.fileReadInvalidFileName) }
-        return target
-    }
-
-    fileprivate static func applicationSupportDirectory() throws -> URL {
-        guard let url = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else {
-            throw CocoaError(.fileNoSuchFile)
-        }
-        return url
-    }
-}

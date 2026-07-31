@@ -337,7 +337,7 @@ enum OnlineLibraryService {
         return url
     }
 
-    private static func cacheURL(relativePath: String) throws -> URL {
+    static func cacheURL(relativePath: String) throws -> URL {
         let base = try applicationSupportDirectory().standardizedFileURL
         let target = base.appendingPathComponent(relativePath).standardizedFileURL
         guard target.path.hasPrefix(base.path + "/") else { throw CocoaError(.fileReadInvalidFileName) }

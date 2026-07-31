@@ -436,19 +436,6 @@ private extension BookExportService {
         if FileManager.default.fileExists(atPath: epubURL.path) {
             try FileManager.default.removeItem(at: epubURL)
         }
-        // iOS 17+ 原生 ZIP 支持
-        let coordinator = NSFileCoordinator()
-        var coordinatorError: NSError?
-        var zipError: Error?
-        coordinator.coordinate(writingItemAt: epubURL, options: .forReplacing, error: &coordinatorError) { writeURL in
-            do {
-                try FileManager.default.zipItem(at: epubDir, to: writeURL)
-            } catch {
-                zipError = error
-            }
-        }
-        if let error = coordinatorError ?? zipError {
-            throw error
-        }
+        try FileManager.default.zipItem(at: epubDir, to: epubURL)
     }
 }

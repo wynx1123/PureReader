@@ -6,7 +6,7 @@ import UIKit
 // MARK: - URL Import Sheet
 
 /// 替代已废弃的 `.alert` + `TextField` 方案，提供专用的 URL 输入页面。
-private struct URLImportSheet: View {
+private struct BookSourceURLImportSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var urlText = ""
     let onImport: (String) async -> Void
@@ -319,7 +319,7 @@ struct BookSourceManagerView: View {
                 }
             }
             .sheet(isPresented: $showURLImportSheet) {
-                URLImportSheet { text in
+                BookSourceURLImportSheet { text in
                     importURLText = text
                     await importFromURL()
                 }

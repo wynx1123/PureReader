@@ -184,8 +184,9 @@ enum CacheIntegrityService {
         }
         return cleaned
     }
+}
 
-    // MARK: - ChapterCacheValidation
+// MARK: - ChapterCacheValidation
 
 /// 章节缓存验证结果。
 enum ChapterCacheValidation: Sendable {

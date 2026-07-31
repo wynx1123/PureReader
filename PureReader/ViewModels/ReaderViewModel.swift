@@ -1418,6 +1418,12 @@ final class ReaderViewModel {
             book.currentPageOffset = page.location
         }
         book.lastReadAt = Date()
+        if book.format == .online {
+            book.highestReadChapterIndex = max(book.highestReadChapterIndex, chapterIndex)
+            let nextUnread = book.highestReadChapterIndex + 1
+            book.firstUnreadChapterIndex = nextUnread < chapters.count ? nextUnread : -1
+            book.unreadChapterCount = max(0, chapters.count - nextUnread)
+        }
         if chapters.count > 0 {
             book.readingProgress = Double(chapterIndex) / Double(chapters.count)
                 + (pages.isEmpty ? 0 : Double(pageIndex) / Double(pages.count) / Double(chapters.count))

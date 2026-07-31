@@ -70,7 +70,7 @@ enum CacheIntegrityService {
             validCount: valid,
             missingCount: missing,
             invalidCount: invalid,
-            orphanFileCount: orphans,
+            orphanFileCount: orphans.count,
             totalBytes: totalBytes
         )
     }
@@ -118,7 +118,7 @@ enum CacheIntegrityService {
             validCount: valid,
             missingCount: missing,
             invalidCount: invalid,
-            orphanFileCount: orphans,
+            orphanFileCount: orphans.count,
             totalBytes: totalBytes
         )
         return (report, details)

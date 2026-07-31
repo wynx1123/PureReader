@@ -164,9 +164,9 @@ final class DownloadManager {
     func restoreTasks(context: ModelContext) {
         let descriptor = FetchDescriptor<DownloadTask>(
             predicate: #Predicate { task in
-                task.statusRaw != DownloadTaskStatus.completed.rawValue
-                    && task.statusRaw != DownloadTaskStatus.cancelled.rawValue
-                    && task.statusRaw != DownloadTaskStatus.failed.rawValue
+                task.statusRaw != "completed"
+                    && task.statusRaw != "cancelled"
+                    && task.statusRaw != "failed"
             }
         )
         guard let pending = try? context.fetch(descriptor) else { return }

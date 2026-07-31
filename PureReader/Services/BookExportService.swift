@@ -467,11 +467,10 @@ private extension BookExportService {
         if FileManager.default.fileExists(atPath: epubURL.path) {
             try FileManager.default.removeItem(at: epubURL)
         }
-        // 手动创建 ZIP：先收集所有文件，再写入
         let fileManager = FileManager.default
         var entries: [(path: String, data: Data)] = []
 
-        // 1. 先写入 mimetype（不压缩，首文件）
+        // 1. mimetype（不压缩，首文件）
         let mimetypePath = epubDir.appendingPathComponent("mimetype")
         if fileManager.fileExists(atPath: mimetypePath.path) {
             entries.append(("mimetype", try Data(contentsOf: mimetypePath)))
@@ -481,19 +480,20 @@ private extension BookExportService {
         func collectFiles(in dir: URL, basePath: String) throws {
             let contents = try fileManager.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
             for url in contents {
-                let relativePath = basePath + "/" + url.lastPathComponent
+                let name = url.lastPathComponent
+                let relativePath = basePath.isEmpty ? name : basePath + "/" + name
                 var isDir: ObjCBool = false
                 if fileManager.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
                     entries.append((relativePath + "/", Data()))
                     try collectFiles(in: url, basePath: relativePath)
-                } else if url.lastPathComponent != "mimetype" {
+                } else if name != "mimetype" {
                     entries.append((relativePath, try Data(contentsOf: url)))
                 }
             }
         }
         try collectFiles(in: epubDir, basePath: "")
 
-        // 3. 写入 ZIP 文件
+        // 3. 写入 ZIP
         let output = try FileHandle(forWritingTo: epubURL)
         defer { try? output.close() }
 
@@ -503,74 +503,72 @@ private extension BookExportService {
         for (path, data) in entries {
             let isMimetype = path == "mimetype"
             let compressed = isMimetype ? data : compressData(data)
-            let crc = crc32(data)
+            let crc = crc32Value(data)
+            let pathBytes = path.data(using: .utf8)!
 
             // Local file header
-            var localHeader = Data()
-            localHeader.append(localFileHeaderSignature)
-            localHeader.append(UInt16(20)) // version needed
-            localHeader.append(UInt16(0))  // flags
-            localHeader.append(UInt16(isMimetype ? 0 : 8)) // compression: 0=stored, 8=deflated
-            localHeader.append(UInt16(0))  // mod time
-            localHeader.append(UInt16(0))  // mod date
-            localHeader.append(crc)        // crc32
-            localHeader.append(UInt32(compressed.count)) // compressed size
-            localHeader.append(UInt32(data.count))       // uncompressed size
-            localHeader.append(UInt16(path.utf8.count))  // filename length
-            localHeader.append(UInt16(0))  // extra field length
-            localHeader.append(contentsOf: path.data(using: .utf8)!)
+            var local = Data()
+            local.append(contentsOf: [0x50, 0x4B, 0x03, 0x04]) // signature
+            local.append(u16: 20)  // version needed
+            local.append(u16: 0)   // flags
+            local.append(u16: isMimetype ? 0 : 8) // compression
+            local.append(u16: 0)   // mod time
+            local.append(u16: 0)   // mod date
+            local.append(u32: crc)
+            local.append(u32: UInt32(compressed.count))
+            local.append(u32: UInt32(data.count))
+            local.append(u16: UInt16(pathBytes.count))
+            local.append(u16: 0)   // extra field
+            local.append(contentsOf: pathBytes)
 
-            output.write(localHeader)
+            output.write(local)
             output.write(compressed)
 
             // Central directory entry
-            var cdEntry = Data()
-            cdEntry.append(centralDirectoryHeaderSignature)
-            cdEntry.append(UInt16(20)) // version made by
-            cdEntry.append(UInt16(20)) // version needed
-            cdEntry.append(UInt16(0))  // flags
-            cdEntry.append(UInt16(isMimetype ? 0 : 8)) // compression
-            cdEntry.append(UInt16(0))  // mod time
-            cdEntry.append(UInt16(0))  // mod date
-            cdEntry.append(crc)
-            cdEntry.append(UInt32(compressed.count))
-            cdEntry.append(UInt32(data.count))
-            cdEntry.append(UInt16(path.utf8.count))
-            cdEntry.append(UInt16(0))  // extra field length
-            cdEntry.append(UInt16(0))  // file comment length
-            cdEntry.append(UInt16(0))  // disk number start
-            cdEntry.append(UInt16(0))  // internal file attributes
-            cdEntry.append(UInt32(0))  // external file attributes
-            cdEntry.append(UInt32(offset)) // relative offset of local header
-            cdEntry.append(contentsOf: path.data(using: .utf8)!)
+            var cd = Data()
+            cd.append(contentsOf: [0x50, 0x4B, 0x01, 0x02]) // signature
+            cd.append(u16: 20) // version made by
+            cd.append(u16: 20) // version needed
+            cd.append(u16: 0)  // flags
+            cd.append(u16: isMimetype ? 0 : 8) // compression
+            cd.append(u16: 0)  // mod time
+            cd.append(u16: 0)  // mod date
+            cd.append(u32: crc)
+            cd.append(u32: UInt32(compressed.count))
+            cd.append(u32: UInt32(data.count))
+            cd.append(u16: UInt16(pathBytes.count))
+            cd.append(u16: 0)  // extra field
+            cd.append(u16: 0)  // file comment
+            cd.append(u16: 0)  // disk number start
+            cd.append(u16: 0)  // internal attrs
+            cd.append(u32: 0)  // external attrs
+            cd.append(u32: offset) // local header offset
+            cd.append(contentsOf: pathBytes)
 
-            centralDirectory.append(cdEntry)
-            offset += UInt32(localHeader.count + compressed.count)
+            centralDirectory.append(cd)
+            offset += UInt32(local.count + compressed.count)
         }
 
         let cdOffset = offset
         output.write(centralDirectory)
 
         // End of central directory
+        let entryCount = UInt16(entries.count)
         var eocd = Data()
-        eocd.append(endOfCentralDirectorySignature)
-        eocd.append(UInt16(0))  // disk number
-        eocd.append(UInt16(0))  // disk with central directory
-        eocd.append(UInt16(UInt16(entries.count))) // entries on this disk
-        eocd.append(UInt16(UInt16(entries.count))) // total entries
-        eocd.append(UInt32(centralDirectory.count)) // size of central directory
-        eocd.append(UInt32(cdOffset))               // offset of central directory
-        eocd.append(UInt16(0))  // comment length
+        eocd.append(contentsOf: [0x50, 0x4B, 0x05, 0x06]) // signature
+        eocd.append(u16: 0)  // disk number
+        eocd.append(u16: 0)  // disk with CD
+        eocd.append(u16: entryCount) // entries on this disk
+        eocd.append(u16: entryCount) // total entries
+        eocd.append(u32: UInt32(centralDirectory.count))
+        eocd.append(u32: cdOffset)
+        eocd.append(u16: 0)  // comment length
         output.write(eocd)
     }
 
-    // MARK: - ZIP constants
-    private static let localFileHeaderSignature = Data([0x50, 0x4B, 0x03, 0x04])
-    private static let centralDirectoryHeaderSignature = Data([0x50, 0x4B, 0x01, 0x02])
-    private static let endOfCentralDirectorySignature = Data([0x50, 0x4B, 0x05, 0x06])
+    // MARK: - CRC-32
 
-    private static func crc32(_ data: Data) -> UInt32 {
-        // CRC-32 计算
+    private static func crc32Value(_ data: Data) -> UInt32 {
         return data.withUnsafeBytes { bytes in
             var crc: UInt32 = 0xFFFF_FFFF
             let table = crc32Table
@@ -597,4 +595,18 @@ private extension BookExportService {
         }
         return table
     }()
+}
+
+// MARK: - Data binary helpers
+
+private extension Data {
+    mutating func append(u16 value: UInt16) {
+        var v = value.littleEndian
+        append(contentsOf: Swift.withUnsafeBytes(of: &v) { Array($0) })
+    }
+
+    mutating func append(u32 value: UInt32) {
+        var v = value.littleEndian
+        append(contentsOf: Swift.withUnsafeBytes(of: &v) { Array($0) })
+    }
 }

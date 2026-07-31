@@ -1,4 +1,5 @@
 import Foundation
+import Compression
 
 // MARK: - BookExportFormat
 
@@ -287,6 +288,10 @@ enum BookExportService {
         let epubDir = dir.appendingPathComponent("epub", isDirectory: true)
         try FileManager.default.createDirectory(at: epubDir, withIntermediateDirectories: true)
 
+        // mimetype（EPUB 标准要求首文件，不压缩）
+        let mimetypeData = "application/epub+zip".data(using: .ascii)!
+        try mimetypeData.write(to: epubDir.appendingPathComponent("mimetype"))
+
         // 创建 EPUB 基本结构
         let metaInfDir = epubDir.appendingPathComponent("META-INF", isDirectory: true)
         try FileManager.default.createDirectory(at: metaInfDir, withIntermediateDirectories: true)
@@ -431,11 +436,165 @@ enum BookExportService {
 
 private extension BookExportService {
 
-    /// 使用 FileManager 原生 ZIP 打包 EPUB。
+    /// 使用 Compression 框架压缩数据。
+    static func compressData(_ data: Data) -> Data {
+        let sourceSize = data.count
+        let destinationSize = sourceSize + 1024
+        var result = Data(count: destinationSize)
+        let compressedSize = result.withUnsafeMutableBytes { dest -> Int in
+            return data.withUnsafeBytes { src -> Int in
+                guard let destBase = dest.baseAddress,
+                      let srcBase = src.baseAddress else { return 0 }
+                return compression_encode_buffer(
+                    destBase.assumingMemoryBound(to: UInt8.self),
+                    destinationSize,
+                    srcBase.assumingMemoryBound(to: UInt8.self),
+                    sourceSize,
+                    nil,
+                    COMPRESSION_ZLIB
+                )
+            }
+        }
+        if compressedSize > 0 && compressedSize <= destinationSize {
+            result.count = compressedSize
+            return result
+        }
+        return data
+    }
+
+    /// 使用手动 ZIP 打包 EPUB。
     static func createEPUBArchive(from epubDir: URL, to epubURL: URL) throws {
         if FileManager.default.fileExists(atPath: epubURL.path) {
             try FileManager.default.removeItem(at: epubURL)
         }
-        try FileManager.default.zipItem(at: epubDir, to: epubURL)
+        // 手动创建 ZIP：先收集所有文件，再写入
+        let fileManager = FileManager.default
+        var entries: [(path: String, data: Data)] = []
+
+        // 1. 先写入 mimetype（不压缩，首文件）
+        let mimetypePath = epubDir.appendingPathComponent("mimetype")
+        if fileManager.fileExists(atPath: mimetypePath.path) {
+            entries.append(("mimetype", try Data(contentsOf: mimetypePath)))
+        }
+
+        // 2. 递归收集其他文件
+        func collectFiles(in dir: URL, basePath: String) throws {
+            let contents = try fileManager.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)
+            for url in contents {
+                let relativePath = basePath + "/" + url.lastPathComponent
+                var isDir: ObjCBool = false
+                if fileManager.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                    entries.append((relativePath + "/", Data()))
+                    try collectFiles(in: url, basePath: relativePath)
+                } else if url.lastPathComponent != "mimetype" {
+                    entries.append((relativePath, try Data(contentsOf: url)))
+                }
+            }
+        }
+        try collectFiles(in: epubDir, basePath: "")
+
+        // 3. 写入 ZIP 文件
+        let output = try FileHandle(forWritingTo: epubURL)
+        defer { try? output.close() }
+
+        var centralDirectory = Data()
+        var offset: UInt32 = 0
+
+        for (path, data) in entries {
+            let isMimetype = path == "mimetype"
+            let compressed = isMimetype ? data : compressData(data)
+            let crc = crc32(data)
+
+            // Local file header
+            var localHeader = Data()
+            localHeader.append(localFileHeaderSignature)
+            localHeader.append(UInt16(20)) // version needed
+            localHeader.append(UInt16(0))  // flags
+            localHeader.append(UInt16(isMimetype ? 0 : 8)) // compression: 0=stored, 8=deflated
+            localHeader.append(UInt16(0))  // mod time
+            localHeader.append(UInt16(0))  // mod date
+            localHeader.append(crc)        // crc32
+            localHeader.append(UInt32(compressed.count)) // compressed size
+            localHeader.append(UInt32(data.count))       // uncompressed size
+            localHeader.append(UInt16(path.utf8.count))  // filename length
+            localHeader.append(UInt16(0))  // extra field length
+            localHeader.append(contentsOf: path.data(using: .utf8)!)
+
+            output.write(localHeader)
+            output.write(compressed)
+
+            // Central directory entry
+            var cdEntry = Data()
+            cdEntry.append(centralDirectoryHeaderSignature)
+            cdEntry.append(UInt16(20)) // version made by
+            cdEntry.append(UInt16(20)) // version needed
+            cdEntry.append(UInt16(0))  // flags
+            cdEntry.append(UInt16(isMimetype ? 0 : 8)) // compression
+            cdEntry.append(UInt16(0))  // mod time
+            cdEntry.append(UInt16(0))  // mod date
+            cdEntry.append(crc)
+            cdEntry.append(UInt32(compressed.count))
+            cdEntry.append(UInt32(data.count))
+            cdEntry.append(UInt16(path.utf8.count))
+            cdEntry.append(UInt16(0))  // extra field length
+            cdEntry.append(UInt16(0))  // file comment length
+            cdEntry.append(UInt16(0))  // disk number start
+            cdEntry.append(UInt16(0))  // internal file attributes
+            cdEntry.append(UInt32(0))  // external file attributes
+            cdEntry.append(UInt32(offset)) // relative offset of local header
+            cdEntry.append(contentsOf: path.data(using: .utf8)!)
+
+            centralDirectory.append(cdEntry)
+            offset += UInt32(localHeader.count + compressed.count)
+        }
+
+        let cdOffset = offset
+        output.write(centralDirectory)
+
+        // End of central directory
+        var eocd = Data()
+        eocd.append(endOfCentralDirectorySignature)
+        eocd.append(UInt16(0))  // disk number
+        eocd.append(UInt16(0))  // disk with central directory
+        eocd.append(UInt16(UInt16(entries.count))) // entries on this disk
+        eocd.append(UInt16(UInt16(entries.count))) // total entries
+        eocd.append(UInt32(centralDirectory.count)) // size of central directory
+        eocd.append(UInt32(cdOffset))               // offset of central directory
+        eocd.append(UInt16(0))  // comment length
+        output.write(eocd)
     }
+
+    // MARK: - ZIP constants
+    private static let localFileHeaderSignature = Data([0x50, 0x4B, 0x03, 0x04])
+    private static let centralDirectoryHeaderSignature = Data([0x50, 0x4B, 0x01, 0x02])
+    private static let endOfCentralDirectorySignature = Data([0x50, 0x4B, 0x05, 0x06])
+
+    private static func crc32(_ data: Data) -> UInt32 {
+        // CRC-32 计算
+        return data.withUnsafeBytes { bytes in
+            var crc: UInt32 = 0xFFFF_FFFF
+            let table = crc32Table
+            for byte in bytes.bindMemory(to: UInt8.self) {
+                let index = Int((crc ^ UInt32(byte)) & 0xFF)
+                crc = (crc >> 8) ^ table[index]
+            }
+            return crc ^ 0xFFFF_FFFF
+        }
+    }
+
+    private static let crc32Table: [UInt32] = {
+        var table = [UInt32](repeating: 0, count: 256)
+        for i in 0..<256 {
+            var crc = UInt32(i)
+            for _ in 0..<8 {
+                if crc & 1 != 0 {
+                    crc = (crc >> 1) ^ 0xEDB8_8320
+                } else {
+                    crc >>= 1
+                }
+            }
+            table[i] = crc
+        }
+        return table
+    }()
 }

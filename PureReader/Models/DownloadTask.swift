@@ -157,6 +157,45 @@ struct DownloadTaskSnapshot: Identifiable, Sendable {
     let updatedAt: Date
     let lastErrorMessage: String?
 
+    var fractionCompleted: Double {
+        totalCount > 0 ? Double(completedCount + failedCount) / Double(totalCount) : 0
+    }
+
+    var isTerminal: Bool {
+        switch status {
+        case .completed, .completedWithFailures, .failed, .cancelled:
+            return true
+        case .queued, .running, .paused, .cancelling:
+            return false
+        }
+    }
+
+    init(
+        id: UUID,
+        bookID: UUID,
+        bookTitle: String,
+        kind: DownloadTaskKind,
+        status: DownloadTaskStatus,
+        completedCount: Int,
+        failedCount: Int,
+        totalCount: Int,
+        createdAt: Date,
+        updatedAt: Date,
+        lastErrorMessage: String?
+    ) {
+        self.id = id
+        self.bookID = bookID
+        self.bookTitle = bookTitle
+        self.kind = kind
+        self.status = status
+        self.completedCount = completedCount
+        self.failedCount = failedCount
+        self.totalCount = totalCount
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.lastErrorMessage = lastErrorMessage
+    }
+
     init(_ task: DownloadTask) {
         self.id = task.id
         self.bookID = task.bookID

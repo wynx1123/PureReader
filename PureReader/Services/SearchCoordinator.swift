@@ -108,7 +108,7 @@ enum SearchCoordinator {
                                 sourceID: source.id,
                                 sourceName: source.name,
                                 reason: error.localizedDescription,
-                                verificationURL: verificationURL(from: error)
+                                verificationURL: Self.verificationURL(from: error)
                             )
                             return (idx, [], failure)
                         }

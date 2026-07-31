@@ -246,7 +246,7 @@ enum SearchCoordinator {
         }
     }
 
-    private static func verificationURL(from error: Error) -> URL? {
+    nonisolated private static func verificationURL(from error: Error) -> URL? {
         if case BookSourceError.verificationRequired(let url) = error {
             return url
         }

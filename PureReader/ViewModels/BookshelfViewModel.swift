@@ -37,6 +37,24 @@ final class BookshelfViewModel {
     var pendingTags: String = ""
     var pendingGroup: String = BuiltInGroup.defaultKey
 
+    var isCheckingUpdates = false
+    var updateStatusMessage: String?
+    var onlineOperationError: String?
+
+    /// 下载进度（从 DownloadManager 读取，包含运行中和暂停任务）。
+    var downloadingBookID: UUID? {
+        DownloadManager.shared.tasks.first { !$0.isTerminal }?.bookID
+    }
+    var downloadCompleted: Int {
+        DownloadManager.shared.tasks.first { !$0.isTerminal }?.completedCount ?? 0
+    }
+    var downloadTotal: Int {
+        DownloadManager.shared.tasks.first { !$0.isTerminal }?.totalCount ?? 0
+    }
+    var downloadStatus: DownloadTaskStatus? {
+        DownloadManager.shared.tasks.first { !$0.isTerminal }?.status
+    }
+
     func filteredSorted(_ books: [Book]) -> [Book] {
         var list = books
 
@@ -412,11 +430,202 @@ final class BookshelfViewModel {
     }
 
     func delete(_ book: Book, context: ModelContext) {
+        let bookID = book.id
+        DownloadManager.shared.cancelAllForBook(bookID, context: context)
         do {
             try BookImportService.deleteBook(book, context: context)
         } catch {
             importErrorMessage = error.localizedDescription
         }
+        do { try OnlineLibraryService.purgeCache(bookID: bookID) }
+        catch { importErrorMessage = String(localized: "书籍已删除，但缓存清理失败：\(error.localizedDescription)") }
+    }
+
+    // MARK: - Online updates and offline cache
+
+    func checkUpdates(for book: Book, context: ModelContext) async {
+        guard book.format == .online else { return }
+        isCheckingUpdates = true
+        onlineOperationError = nil
+        updateStatusMessage = String(localized: "正在检查《\(book.title)》…")
+        defer { isCheckingUpdates = false }
+        do {
+            let source = try sourceSnapshot(for: book, context: context)
+            guard let bookURL = book.sourceURL else { throw OnlineLibraryError.notOnlineBook }
+            let fetched = try await BookSourceEngine.fetchTOC(bookURL: bookURL, source: source)
+            guard !fetched.isEmpty else { throw BookSourceError.empty }
+            let existing = (book.chapters ?? []).sorted { $0.index < $1.index }
+            let existingByKey = Dictionary(existing.compactMap { chapter in
+                chapter.sourceURL.flatMap(OnlineLibraryService.stableChapterURL).map { ($0, chapter) }
+            }, uniquingKeysWith: { first, _ in first })
+            let alignment = OnlineLibraryService.alignCatalog(
+                existingURLs: existing.compactMap(\.sourceURL),
+                fetched: fetched
+            )
+            let currentID = existing.first(where: { $0.index == book.currentChapterIndex })?.id
+            let previouslyReadIDs = Set(existing.filter { $0.index <= book.highestReadChapterIndex }.map(\.id))
+            let oldUnreadCount = book.unreadChapterCount
+            let oldFirstUnread = book.firstUnreadChapterIndex
+            let oldTotal = book.totalChapters
+            let oldCheckedAt = book.lastUpdateCheckedAt
+            let oldCurrent = book.currentChapterIndex
+            let oldHighestRead = book.highestReadChapterIndex
+            let snapshots = existing.map { ($0, $0.index, $0.title, $0.sourceURL) }
+            var inserted: [Chapter] = []
+            do {
+                var aligned: [Chapter] = []
+                for item in alignment.items {
+                    if let chapter = existingByKey[item.key] {
+                        if !item.isRetainedRemoteDeletion {
+                            chapter.title = item.title
+                            chapter.sourceURL = item.url
+                        }
+                        aligned.append(chapter)
+                    } else {
+                        let chapter = Chapter(index: aligned.count, title: item.title, sourceURL: item.url)
+                        chapter.book = book
+                        context.insert(chapter)
+                        inserted.append(chapter)
+                        aligned.append(chapter)
+                    }
+                }
+                for (index, chapter) in aligned.enumerated() { chapter.index = index }
+                book.totalChapters = aligned.count
+                if let currentID, let current = aligned.firstIndex(where: { $0.id == currentID }) {
+                    book.currentChapterIndex = current
+                }
+                // The scalar read model can represent only a contiguous prefix.
+                // Stop it at the first remotely inserted/unread chapter so a middle
+                // insertion is not accidentally marked read. Keep current position
+                // independently by chapter identity above.
+                let firstUnread = aligned.firstIndex { !previouslyReadIDs.contains($0.id) }
+                book.firstUnreadChapterIndex = firstUnread ?? -1
+                book.unreadChapterCount = aligned.lazy.filter { !previouslyReadIDs.contains($0.id) }.count
+                book.highestReadChapterIndex = (firstUnread ?? aligned.count) - 1
+                book.lastUpdateCheckedAt = Date()
+                try context.save()
+            } catch {
+                for chapter in inserted { context.delete(chapter) }
+                for (chapter, index, title, url) in snapshots {
+                    chapter.index = index
+                    chapter.title = title
+                    chapter.sourceURL = url
+                }
+                book.unreadChapterCount = oldUnreadCount
+                book.firstUnreadChapterIndex = oldFirstUnread
+                book.totalChapters = oldTotal
+                book.lastUpdateCheckedAt = oldCheckedAt
+                book.currentChapterIndex = oldCurrent
+                book.highestReadChapterIndex = oldHighestRead
+                throw error
+            }
+            updateStatusMessage = alignment.addedCount == 0
+                ? String(localized: "《\(book.title)》已是最新")
+                : String(localized: "《\(book.title)》新增 \(alignment.addedCount) 章")
+        } catch is CancellationError {
+            updateStatusMessage = String(localized: "已取消检查")
+        } catch {
+            onlineOperationError = String(localized: "更新失败：\(error.localizedDescription)；旧目录未改动")
+        }
+    }
+
+    func checkAllUpdates(books: [Book], context: ModelContext) async {
+        let tracked = books.filter { $0.format == .online && $0.updateTrackingEnabled }
+        guard !tracked.isEmpty else {
+            updateStatusMessage = String(localized: "没有开启追更的网络书籍")
+            return
+        }
+        for book in tracked {
+            guard !Task.isCancelled else { return }
+            await checkUpdates(for: book, context: context)
+        }
+    }
+
+    func setTracking(_ enabled: Bool, for book: Book, context: ModelContext) {
+        book.updateTrackingEnabled = enabled
+        do { try context.save() }
+        catch { onlineOperationError = String(localized: "无法保存追更设置：\(error.localizedDescription)") }
+    }
+
+    func downloadCurrentChapter(for book: Book, context: ModelContext) {
+        enqueueDownload(book: book, kind: .currentChapter, startIndex: book.currentChapterIndex, endIndex: book.currentChapterIndex, context: context)
+    }
+
+    func downloadNextTwenty(for book: Book, context: ModelContext) {
+        let lower = book.currentChapterIndex + 1
+        let upper = min(book.totalChapters - 1, lower + 19)
+        guard lower <= upper else {
+            onlineOperationError = String(localized: "当前章之后没有可下载章节")
+            return
+        }
+        enqueueDownload(book: book, kind: .nextTwenty, startIndex: lower, endIndex: upper, context: context)
+    }
+
+    func downloadWholeBook(for book: Book, context: ModelContext) {
+        enqueueDownload(book: book, kind: .wholeBook, startIndex: 0, endIndex: max(0, book.totalChapters - 1), context: context)
+    }
+
+    func cancelDownload(for bookID: UUID, context: ModelContext) {
+        DownloadManager.shared.cancelAllForBook(bookID, context: context)
+    }
+
+    func pauseDownload(for bookID: UUID, context: ModelContext) {
+        guard let task = DownloadManager.shared.tasks.first(where: { $0.bookID == bookID && $0.status == .running }) else {
+            return
+        }
+        DownloadManager.shared.pause(taskID: task.id, context: context)
+    }
+
+    func clearOfflineCache(for book: Book, context: ModelContext) {
+        DownloadManager.shared.cancelAllForBook(book.id, context: context)
+        do {
+            try OnlineLibraryService.purgeCache(bookID: book.id)
+            for chapter in book.chapters ?? [] {
+                chapter.offlineCachePath = nil
+                chapter.offlineCachedAt = nil
+            }
+            try context.save()
+            updateStatusMessage = String(localized: "已清除《\(book.title)》离线缓存")
+        } catch {
+            onlineOperationError = String(localized: "清除离线缓存失败：\(error.localizedDescription)")
+        }
+    }
+
+    private func enqueueDownload(
+        book: Book,
+        kind: DownloadTaskKind,
+        startIndex: Int,
+        endIndex: Int,
+        context: ModelContext
+    ) {
+        onlineOperationError = nil
+        let chapters = (book.chapters ?? []).sorted { $0.index < $1.index }
+            .filter { startIndex...endIndex ~= $0.index }
+        guard !chapters.isEmpty else {
+            onlineOperationError = String(localized: "没有可下载的章节")
+            return
+        }
+        let source: BookSourceSnapshot
+        do { source = try sourceSnapshot(for: book, context: context) }
+        catch { onlineOperationError = error.localizedDescription; return }
+
+        DownloadManager.shared.enqueue(
+            book: book,
+            chapters: chapters,
+            source: source,
+            kind: kind,
+            startIndex: startIndex,
+            endIndex: endIndex,
+            context: context
+        )
+    }
+
+    private func sourceSnapshot(for book: Book, context: ModelContext) throws -> BookSourceSnapshot {
+        let sources = try context.fetch(FetchDescriptor<BookSource>())
+        let source = sources.first { $0.id == book.bookSourceID }
+            ?? sources.first { $0.name == book.sourceName }
+        guard let source else { throw OnlineLibraryError.sourceMissing }
+        return BookSourceSnapshot(source)
     }
 
     private func scheduleUnderstandingAfterImport(_ book: Book, context: ModelContext) {

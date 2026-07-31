@@ -80,7 +80,6 @@ struct DiscoveryView: View {
                 Text(viewModel.errorMessage ?? "")
             }
             .task {
-                BookSourceImporter.seedBuiltInIfNeeded(context: modelContext)
                 viewModel.loadDiscovery(sources: sources)
             }
             .onChange(of: sources.count) { _, _ in
@@ -198,17 +197,41 @@ struct DiscoveryView: View {
     }
 
     private var discoveryEmptyState: some View {
-        ContentUnavailableView {
-            Label(String(localized: "暂未拉取到书籍"), systemImage: "books.vertical")
+        let enabledCount = sources.filter { $0.enabled && $0.isValid }.count
+        let totalCount = sources.count
+        return ContentUnavailableView {
+            Label(
+                enabledCount > 0
+                    ? String(localized: "暂未拉取到书籍")
+                    : String(localized: "需要导入书源"),
+                systemImage: enabledCount > 0 ? "books.vertical" : "server.rack"
+            )
         } description: {
-            if sources.isEmpty {
-                Text(String(localized: "请先导入支持发现或搜索的书源。"))
+            if let status = viewModel.statusMessage {
+                Text(status)
+            } else if totalCount == 0 {
+                Text(String(localized: "书源是连接在线小说网站的桥梁。导入书源后，即可在这里搜索和浏览海量书籍。"))
+            } else if enabledCount == 0 {
+                Text(String(localized: "已安装 \(totalCount) 个书源，但都需要在书源管理中启用或检测后才能使用。"))
             } else {
-                Text(viewModel.statusMessage ?? String(localized: "切换分类、刷新，或到书源管理检查可用性。"))
+                Text(String(localized: "切换分类、刷新，或到书源管理检查可用性。"))
             }
         } actions: {
-            Button(String(localized: "管理书源")) { showSourceManager = true }
+            if totalCount == 0 {
+                Button {
+                    showSourceManager = true
+                } label: {
+                    Label(String(localized: "导入书源"), systemImage: "square.and.arrow.down")
+                }
                 .buttonStyle(.borderedProminent)
+            } else {
+                Button {
+                    showSourceManager = true
+                } label: {
+                    Label(String(localized: "管理书源"), systemImage: "server.rack")
+                }
+                .buttonStyle(.bordered)
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 40)

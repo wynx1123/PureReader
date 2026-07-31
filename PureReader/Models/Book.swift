@@ -28,6 +28,14 @@ final class Book {
     /// 进度 0...1（章节进度近似）
     var readingProgress: Double
 
+    // PureReader 1.1 online-library state. Defaults are required for lightweight
+    // migration of libraries created by earlier releases.
+    var updateTrackingEnabled: Bool = true
+    var lastUpdateCheckedAt: Date? = nil
+    var unreadChapterCount: Int = 0
+    var firstUnreadChapterIndex: Int = -1
+    var highestReadChapterIndex: Int = -1
+
     @Relationship(deleteRule: .cascade, inverse: \Chapter.book)
     var chapters: [Chapter]?
 
@@ -108,6 +116,10 @@ final class Chapter {
     @Attribute(.externalStorage) var richContentData: Data?
     /// Original online chapter URL used for on-demand content loading.
     var sourceURL: String? = nil
+    /// Relative path below Application Support/OfflineChapters. The complete
+    /// body is deliberately kept outside SwiftData and loaded only when read.
+    var offlineCachePath: String? = nil
+    var offlineCachedAt: Date? = nil
     var book: Book?
 
     init(

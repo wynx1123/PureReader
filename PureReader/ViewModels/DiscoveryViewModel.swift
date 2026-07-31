@@ -43,7 +43,7 @@ final class DiscoveryViewModel {
             uniquingKeysWith: { first, _ in first }
         )
         return sources
-            .filter { $0.enabled && !$0.searchURL.isEmpty }
+            .filter { $0.enabled && $0.isValid && !$0.searchURL.isEmpty }
             .map { BookSourceSnapshot($0) }
     }
 
@@ -108,9 +108,14 @@ final class DiscoveryViewModel {
         }
         let snapshots = prepareSources(sources)
         guard !snapshots.isEmpty else {
-            errorMessage = sources.isEmpty
-                ? String(localized: "尚未安装书源，请先在书源管理中导入。")
-                : String(localized: "没有已启用且可搜索的书源。")
+            let incompatible = sources.filter { !$0.isValid }.count
+            if sources.isEmpty {
+                errorMessage = String(localized: "尚未导入书源。请点击右上角的服务器图标进入书源管理，从文件、URL 或社区导入书源。")
+            } else if incompatible == sources.count {
+                errorMessage = String(localized: "已安装 \(sources.count) 个书源，但均因兼容性问题被停用。请进入书源管理，点击书源进行检测，或重新导入该书源。")
+            } else {
+                errorMessage = String(localized: "已安装 \(sources.count) 个书源，但都没有启用。请进入书源管理启用。")
+            }
             return
         }
         isSearching = true
@@ -209,6 +214,8 @@ final class DiscoveryViewModel {
                 format: .online,
                 totalChapters: limited.count
             )
+            book.unreadChapterCount = limited.count
+            book.firstUnreadChapterIndex = limited.isEmpty ? -1 : 0
             context.insert(book)
 
             var chapters: [Chapter] = []
@@ -261,7 +268,12 @@ final class DiscoveryViewModel {
         source.enabled = true
         source.isValid = true
         source.lastCheckedAt = Date()
-        try? context.save()
+        do {
+            try context.save()
+        } catch {
+            errorMessage = String(localized: "验证信息保存失败：\(error.localizedDescription)")
+            return
+        }
         sourceCache[source.id] = BookSourceSnapshot(source)
         verificationRequest = nil
         statusMessage = String(localized: "验证信息已保存，请重试刚才的操作。")

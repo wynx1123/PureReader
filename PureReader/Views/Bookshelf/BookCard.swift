@@ -101,12 +101,21 @@ struct BookCard: View {
 
     private var gridCard: some View {
         VStack(alignment: .leading, spacing: 8) {
-            BookCoverView(
-                title: book.title,
-                author: book.author,
-                coverData: book.coverImageData,
-                progress: book.progressFraction
-            )
+            ZStack(alignment: .topTrailing) {
+                BookCoverView(
+                    title: book.title,
+                    author: book.author,
+                    coverData: book.coverImageData,
+                    progress: book.progressFraction
+                )
+                if book.format == .online && book.unreadChapterCount > 0 {
+                    Text("\(book.unreadChapterCount)")
+                        .font(.caption2.bold()).foregroundStyle(.white)
+                        .padding(.horizontal, 7).padding(.vertical, 4)
+                        .background(.red, in: Capsule()).padding(6)
+                        .accessibilityLabel(String(localized: "\(book.unreadChapterCount) 章未读"))
+                }
+            }
             Text(book.title)
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(PRTheme.primaryText)
@@ -151,6 +160,10 @@ struct BookCard: View {
                         Text("\(Int(book.progressFraction * 100))%")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
+                    }
+                    if book.format == .online && book.unreadChapterCount > 0 {
+                        Text(String(localized: "\(book.unreadChapterCount) 章未读"))
+                            .font(.caption2).foregroundStyle(.red)
                     }
                 }
             }

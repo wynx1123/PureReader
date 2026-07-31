@@ -216,6 +216,10 @@ enum BookImportService {
         for attempt in 0..<3 {
             do {
                 return try await URLSession.shared.data(for: request)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled {
+                throw CancellationError()
             } catch {
                 lastError = error
                 if attempt < 2 {
@@ -283,12 +287,19 @@ enum BookImportService {
             throw ImportError.saveFailed(error.localizedDescription)
         }
 
-        updateKnownTags(tags, context: context)
+        do {
+            try updateKnownTags(tags, context: context)
+        } catch {
+            // The book itself was already committed, so don't report an import
+            // failure that would invite a duplicate retry. The tag index is
+            // auxiliary; make the persistence problem visible to diagnostics.
+            assertionFailure("Failed to update known tags: \(error)")
+        }
         return book
     }
 
     @MainActor
-    private static func updateKnownTags(_ tags: [String], context: ModelContext) {
+    private static func updateKnownTags(_ tags: [String], context: ModelContext) throws {
         guard !tags.isEmpty else { return }
         let descriptor = FetchDescriptor<ShelfPreferences>()
         let prefs = (try? context.fetch(descriptor))?.first
@@ -302,7 +313,7 @@ enum BookImportService {
         var set = Set(target.knownTags)
         for t in tags where !t.isEmpty { set.insert(t) }
         target.knownTags = set.sorted()
-        try? context.save()
+        try context.save()
     }
 
     @MainActor
@@ -313,6 +324,13 @@ enum BookImportService {
         if let records = try? context.fetch(descriptor) {
             for r in records where r.bookID == bid {
                 context.delete(r)
+            }
+        }
+        // 清理阅读标注
+        let annotationDescriptor = FetchDescriptor<ReadingAnnotation>()
+        if let annotations = try? context.fetch(annotationDescriptor) {
+            for a in annotations where a.bookID == bid {
+                context.delete(a)
             }
         }
         context.delete(book)

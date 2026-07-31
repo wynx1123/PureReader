@@ -29,6 +29,7 @@ struct AIRewriteSheet: View {
     @State private var rewritePlan: RewritePlan?
     @State private var progressStage: RewriteProgressStage = .planning
     @State private var resolvedTargetOffset: Int?
+    @State private var activeRewriteTask: Task<Void, Never>?
 
     var body: some View {
         NavigationStack {
@@ -46,7 +47,10 @@ struct AIRewriteSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button(String(localized: "关闭")) { dismiss() }
+                    Button(String(localized: "关闭")) {
+                        activeRewriteTask?.cancel()
+                        dismiss()
+                    }
                 }
             }
             .alert(String(localized: "改写失败"), isPresented: Binding(
@@ -62,6 +66,10 @@ struct AIRewriteSheet: View {
                     selectedText = pageText
                 }
                 style = AIConfig.stylePreset
+            }
+            .onDisappear {
+                activeRewriteTask?.cancel()
+                activeRewriteTask = nil
             }
         }
         .presentationDetents([.medium, .large])
@@ -116,7 +124,7 @@ struct AIRewriteSheet: View {
 
             Section {
                 Button {
-                    Task { await runRewrite() }
+                    startRewrite()
                 } label: {
                     HStack {
                         Spacer()
@@ -149,6 +157,12 @@ struct AIRewriteSheet: View {
             Text(String(localized: "情节规划 → 正文生成 → 一致性检查"))
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+            Button(role: .cancel) {
+                activeRewriteTask?.cancel()
+            } label: {
+                Label(String(localized: "取消本次改写"), systemImage: "xmark.circle")
+            }
+            .buttonStyle(.bordered)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -194,7 +208,7 @@ struct AIRewriteSheet: View {
 
                 HStack(spacing: 12) {
                     Button(String(localized: "重新改写")) {
-                        Task { await runRewrite(retry: true) }
+                        startRewrite(retry: true)
                     }
                     .buttonStyle(.bordered)
 
@@ -220,7 +234,7 @@ struct AIRewriteSheet: View {
             TextField(String(localized: "补充要求"), text: $refineNote)
             Button(String(localized: "取消"), role: .cancel) {}
             Button(String(localized: "提交")) {
-                Task { await runRefine() }
+                startRefine()
             }
         } message: {
             Text(String(localized: "在现有改写基础上追加要求"))
@@ -273,6 +287,20 @@ struct AIRewriteSheet: View {
 
     // MARK: - Actions
 
+    private func startRewrite(retry: Bool = false) {
+        activeRewriteTask?.cancel()
+        activeRewriteTask = Task {
+            await runRewrite(retry: retry)
+        }
+    }
+
+    private func startRefine() {
+        activeRewriteTask?.cancel()
+        activeRewriteTask = Task {
+            await runRefine()
+        }
+    }
+
     private func runRewrite(retry: Bool = false) async {
         isWorking = true
         phase = .loading
@@ -297,6 +325,8 @@ struct AIRewriteSheet: View {
             rewritePlan = outcome.plan
             warnings = outcome.validation.warnings
             phase = .result
+        } catch is CancellationError {
+            phase = retry ? .result : .selecting
         } catch {
             errorMessage = error.localizedDescription
             phase = .selecting
@@ -331,6 +361,8 @@ struct AIRewriteSheet: View {
             userRequest = combinedQuery
             phase = .result
             refineNote = ""
+        } catch is CancellationError {
+            phase = .result
         } catch {
             errorMessage = error.localizedDescription
             phase = .result

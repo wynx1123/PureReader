@@ -80,7 +80,24 @@ final class ReaderViewModel {
         self.context = context
         self.settings = Self.loadOrCreateSettings(context: context)
         self.chapters = (book.chapters ?? []).sorted { $0.index < $1.index }
-        self.chapterIndex = min(max(0, book.currentChapterIndex), max(0, chapters.count - 1))
+        let resumeIndex: Int
+        if book.format == .online {
+            if (0..<chapters.count).contains(book.firstUnreadChapterIndex) {
+                resumeIndex = book.firstUnreadChapterIndex
+            } else if let unread = OnlineLibraryService.firstUnreadIndex(
+                totalChapters: chapters.count,
+                highestReadIndex: book.highestReadChapterIndex,
+                currentIndex: book.currentChapterIndex
+            ) {
+                resumeIndex = unread
+            } else {
+                resumeIndex = book.currentChapterIndex
+            }
+        } else {
+            resumeIndex = book.currentChapterIndex
+        }
+        self.chapterIndex = min(max(0, resumeIndex), max(0, chapters.count - 1))
+        if resumeIndex != book.currentChapterIndex { book.currentPageOffset = 0 }
         timer.attach(book: book, context: context)
         configureTTS()
         reloadBookmarkCache()
@@ -125,7 +142,7 @@ final class ReaderViewModel {
     func onAppear() {
         timer.start()
         book.lastReadAt = Date()
-        try? context.save()
+        persistProgress(immediate: true)
         applyScreenSettings()
         BookUnderstandingCoordinator.shared.scheduleIfNeeded(book: book, context: context)
         loadCurrentChapterContentIfNeeded(restoreOffset: book.currentPageOffset)
@@ -428,6 +445,18 @@ final class ReaderViewModel {
         guard let chapter = currentChapter,
               let chapterURL = chapter.sourceURL,
               !chapterURL.isEmpty else { return }
+        if !force, chapter.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           let path = chapter.offlineCachePath {
+            do {
+                chapter.content = try OnlineLibraryService.cachedText(relativePath: path)
+                repaginate(restoreOffset: restoreOffset ?? 0)
+                return
+            } catch {
+                chapter.offlineCachePath = nil
+                chapter.offlineCachedAt = nil
+                chapterLoadError = String(localized: "离线缓存损坏，将尝试重新下载：\(error.localizedDescription)")
+            }
+        }
         if !force, !chapter.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return }
         if loadingChapterID == chapter.id { return }
         guard let source = resolveOnlineSource() else {
@@ -452,7 +481,8 @@ final class ReaderViewModel {
             do {
                 let text = try await BookSourceEngine.fetchContent(
                     chapterURL: chapterURL,
-                    source: sourceSnapshot
+                    source: sourceSnapshot,
+                    currentBookURL: book.sourceURL
                 )
                 guard !Task.isCancelled,
                       let target = chapters.first(where: { $0.id == chapterID }) else { return }
@@ -461,7 +491,7 @@ final class ReaderViewModel {
                     throw BookSourceError.empty
                 }
                 target.content = normalized
-                try? context.save()
+                try context.save()
                 if currentChapter?.id == chapterID {
                     repaginate(restoreOffset: restoreOffset ?? 0)
                 }
@@ -503,7 +533,12 @@ final class ReaderViewModel {
         source.enabled = true
         source.isValid = true
         source.lastCheckedAt = Date()
-        try? context.save()
+        do {
+            try context.save()
+        } catch {
+            chapterLoadError = String(localized: "无法保存验证凭据：\(error.localizedDescription)")
+            return
+        }
         verificationRequest = nil
         chapterLoadError = nil
         loadCurrentChapterContentIfNeeded(restoreOffset: book.currentPageOffset, force: true)
@@ -1373,6 +1408,12 @@ final class ReaderViewModel {
             book.currentPageOffset = page.location
         }
         book.lastReadAt = Date()
+        if book.format == .online {
+            book.highestReadChapterIndex = max(book.highestReadChapterIndex, chapterIndex)
+            let nextUnread = book.highestReadChapterIndex + 1
+            book.firstUnreadChapterIndex = nextUnread < chapters.count ? nextUnread : -1
+            book.unreadChapterCount = max(0, chapters.count - nextUnread)
+        }
         if chapters.count > 0 {
             book.readingProgress = Double(chapterIndex) / Double(chapters.count)
                 + (pages.isEmpty ? 0 : Double(pageIndex) / Double(pages.count) / Double(chapters.count))

@@ -14,7 +14,10 @@ struct PureReaderApp: App {
             ShelfPreferences.self,
             RewriteRecord.self,
             BookSource.self,
-            Bookmark.self
+            Bookmark.self,
+            DownloadTask.self,
+            DownloadTaskItem.self,
+            ReadingAnnotation.self
         ])
         let config = ModelConfiguration(
             "PureReader",
@@ -37,6 +40,13 @@ struct PureReaderApp: App {
             } catch {
                 fatalError("SwiftData 初始化失败: \(error)")
             }
+        }
+
+        // 启动时执行一次性初始化
+        Task { @MainActor in
+            let context = modelContainer.mainContext
+            BookSourceImporter.seedBuiltInIfNeeded(context: context)
+            DownloadManager.shared.restoreTasks(context: context)
         }
     }
 

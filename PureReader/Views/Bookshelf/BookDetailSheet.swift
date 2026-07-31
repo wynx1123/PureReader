@@ -11,6 +11,7 @@ struct BookDetailSheet: View {
     let onRead: () -> Void
     let onEdit: () -> Void
     let onExport: () -> Void
+    let onDownload: () -> Void
     let onDelete: () -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -21,12 +22,14 @@ struct BookDetailSheet: View {
         onRead: @escaping () -> Void,
         onEdit: @escaping () -> Void,
         onExport: @escaping () -> Void,
+        onDownload: @escaping () -> Void,
         onDelete: @escaping () -> Void
     ) {
         self.book = book
         self.onRead = onRead
         self.onEdit = onEdit
         self.onExport = onExport
+        self.onDownload = onDownload
         self.onDelete = onDelete
     }
 
@@ -218,6 +221,17 @@ struct BookDetailSheet: View {
             } label: {
                 Label(String(localized: "编辑信息"), systemImage: "pencil")
                     .frame(minHeight: PRTheme.touch)
+            }
+
+            // 在线书源书籍支持缓存全书离线阅读
+            if book.sourceType == .booksource {
+                Button {
+                    dismiss()
+                    onDownload()
+                } label: {
+                    Label(String(localized: "缓存全书"), systemImage: "arrow.down.to.line")
+                        .frame(minHeight: PRTheme.touch)
+                }
             }
 
             Button {

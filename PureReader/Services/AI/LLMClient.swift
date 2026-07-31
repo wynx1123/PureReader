@@ -31,6 +31,8 @@ enum LLMClient {
         case httpStatus(Int, String)
         case decodeFailed
         case emptyResponse
+        case requestTimedOut(Int)
+        case networkUnavailable(String)
         case cancelled
 
         var errorDescription: String? {
@@ -49,6 +51,12 @@ enum LLMClient {
                 return String(localized: "无法解析 API 响应")
             case .emptyResponse:
                 return String(localized: "模型返回为空")
+            case .requestTimedOut(let seconds):
+                return String(
+                    localized: "模型响应超过 \(seconds) 秒。已停止本次请求，请检查模型负载或缩短选中文本后重试"
+                )
+            case .networkUnavailable(let message):
+                return String(localized: "无法连接模型服务：\(message)")
             case .cancelled:
                 return String(localized: "已取消")
             }
@@ -88,7 +96,19 @@ enum LLMClient {
             request.setValue(cleanedKey, forHTTPHeaderField: "api-key")
         }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .timedOut {
+            throw ClientError.requestTimedOut(Int(timeout.rounded()))
+        } catch let error as URLError {
+            throw ClientError.networkUnavailable(error.localizedDescription)
+        }
         try throwIfNeeded(data: data, response: response)
         let models = try parseModelIDs(data)
         guard !models.isEmpty else { throw ClientError.emptyResponse }
@@ -124,7 +144,19 @@ enum LLMClient {
         ]
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .timedOut {
+            throw ClientError.requestTimedOut(Int(timeout.rounded()))
+        } catch let error as URLError {
+            throw ClientError.networkUnavailable(error.localizedDescription)
+        }
         try throwIfNeeded(data: data, response: response)
 
         guard
@@ -174,7 +206,19 @@ enum LLMClient {
         }
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+            throw CancellationError()
+        } catch let error as URLError where error.code == .timedOut {
+            throw ClientError.requestTimedOut(Int(timeout.rounded()))
+        } catch let error as URLError {
+            throw ClientError.networkUnavailable(error.localizedDescription)
+        }
         if let http = response as? HTTPURLResponse,
            (http.statusCode == 400 || http.statusCode == 422),
            dims > 0 {

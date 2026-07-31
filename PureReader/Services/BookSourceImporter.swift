@@ -3,7 +3,7 @@ import SwiftData
 
 /// 多格式书源导入：Legado / 爱阅记 / PureReader JSON
 enum BookSourceImporter {
-    private static let maxDownloadBytes = 10 * 1024 * 1024
+    static let maximumImportBytes = 10 * 1024 * 1024
 
     struct ImportResult: Sendable {
         var changed: Int
@@ -24,6 +24,20 @@ enum BookSourceImporter {
 
     // MARK: - Public
 
+    static func readLocalJSON(from url: URL) throws -> Data {
+        let values = try url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey])
+        if values.isDirectory == true { throw ImportError.invalidFormat }
+        if let size = values.fileSize, size > maximumImportBytes {
+            throw ImportError.responseTooLarge
+        }
+
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        let data = try handle.read(upToCount: maximumImportBytes + 1) ?? Data()
+        guard data.count <= maximumImportBytes else { throw ImportError.responseTooLarge }
+        return data
+    }
+
     @MainActor
     static func importJSON(_ data: Data, into context: ModelContext) throws -> ImportResult {
         let data = normalizedJSONData(data)
@@ -33,7 +47,8 @@ enum BookSourceImporter {
         let objects = sourceObjects(from: root)
         guard !objects.isEmpty else { throw ImportError.invalidFormat }
 
-        let candidates = objects.compactMap { try? parseOne($0) }
+        let parsedCandidates = objects.compactMap { try? parseOne($0) }
+        let candidates = coalescedCandidates(parsedCandidates)
         guard !candidates.isEmpty else { throw ImportError.noValidSources }
 
         let existing = (try? context.fetch(FetchDescriptor<BookSource>())) ?? []
@@ -105,7 +120,7 @@ enum BookSourceImporter {
             throw ImportError.httpStatus(http.statusCode)
         }
         guard !data.isEmpty else { throw ImportError.emptyResponse }
-        guard data.count <= maxDownloadBytes else { throw ImportError.responseTooLarge }
+        guard data.count <= maximumImportBytes else { throw ImportError.responseTooLarge }
         return try importJSON(data, into: context)
     }
 
@@ -125,19 +140,27 @@ enum BookSourceImporter {
         var lastError: Error?
         for attempt in 0..<3 {
             do {
-                // 曾经用 URLSession.bytes 逐字节 append，对 10 MB 上限意味着上千万次
-                // 异步迭代，几 MB 的社区合集就会卡死界面。改为一次性下载 + 预检长度。
-                let (data, response) = try await URLSession.shared.data(for: request)
+                // Download to a temporary file so an unexpectedly large response
+                // cannot be buffered entirely in memory before the 10 MB limit is checked.
+                let (temporaryURL, response) = try await URLSession.shared.download(for: request)
                 if let http = response as? HTTPURLResponse {
                     guard (200...299).contains(http.statusCode) else {
                         throw ImportError.httpStatus(http.statusCode)
                     }
                 }
-                guard data.count <= maxDownloadBytes else {
+                guard response.expectedContentLength < 0
+                        || response.expectedContentLength <= Int64(maximumImportBytes) else {
                     throw ImportError.responseTooLarge
                 }
+                let values = try temporaryURL.resourceValues(forKeys: [.fileSizeKey])
+                guard (values.fileSize ?? 0) <= maximumImportBytes else {
+                    throw ImportError.responseTooLarge
+                }
+                let data = try readLocalJSON(from: temporaryURL)
                 return (data, response)
             } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as URLError where error.code == .cancelled {
                 throw CancellationError()
             } catch let error as ImportError {
                 throw error
@@ -190,12 +213,61 @@ enum BookSourceImporter {
             || object["search_url"] != nil
     }
 
+    /// Native adapters may have a primary and a disabled fallback entry in the
+    /// same Legado file. Import them as one logical source and prefer the enabled
+    /// primary entry, otherwise a later disabled fallback could overwrite it.
+    private static func coalescedCandidates(_ candidates: [BookSource]) -> [BookSource] {
+        var orderedKeys: [String] = []
+        var selected: [String: BookSource] = [:]
+        for candidate in candidates {
+            let key = identityKey(candidate)
+            guard let current = selected[key] else {
+                orderedKeys.append(key)
+                selected[key] = candidate
+                continue
+            }
+            if candidatePreference(candidate) > candidatePreference(current) {
+                selected[key] = candidate
+            }
+        }
+        return orderedKeys.compactMap { selected[$0] }
+    }
+
+    private static func candidatePreference(_ source: BookSource) -> Int {
+        var score = source.enabled && source.isValid ? 100 : 0
+        let lowerName = source.name.lowercased()
+        if lowerName.contains("备用") || lowerName.contains("backup") {
+            score -= 10
+        }
+        return score
+    }
+
     private static func identityKey(_ source: BookSource) -> String {
+        if let native = NativeBookSourceAdapter.detect(name: source.name, bookSourceURL: source.bookURL) {
+            return "native|" + native.rawValue
+        }
         let base = sanitizedBaseURL(source.bookURL)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             .lowercased()
-        let fallback = source.searchURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return source.formatRaw + "|" + (base.isEmpty ? source.name.lowercased() + "|" + fallback : base)
+        let search = source.searchURL.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let fallback = source.name.lowercased()
+        // 加入搜索 URL 和规则摘要，避免同一站点不同搜索策略被错误合并
+        let ruleHash = stableRuleHash(source.rules)
+        return source.formatRaw + "|"
+            + (base.isEmpty ? fallback + "|" + search : base)
+            + "|" + search + "|" + ruleHash
+    }
+
+    /// 解析规则的稳定摘要，用于去重比较。
+    private static func stableRuleHash(_ rules: ParseRule) -> String {
+        let fields = [
+            rules.bookList, rules.name, rules.author, rules.bookUrl,
+            rules.chapterList, rules.chapterName, rules.chapterUrl, rules.content
+        ].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard !fields.isEmpty else { return "" }
+        // 简单摘要：取前 3 个规则字段拼接
+        let sample = fields.prefix(3).joined(separator: "|")
+        return String(sample.prefix(80))
     }
 
     private static func update(_ target: BookSource, from source: BookSource) {
@@ -222,6 +294,19 @@ enum BookSourceImporter {
         return withoutMetadata.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private static func unsupportedNativeIssue(
+        name: String,
+        bookSourceURL: String
+    ) -> String? {
+        let lowerName = name.lowercased()
+        let lowerURL = bookSourceURL.lowercased()
+        if (lowerName.contains("pixiv") && lowerName.contains("漫画"))
+            || lowerURL.contains("pixiv.net/manga") {
+            return String(localized: "Pixiv 漫画需要图片章节阅读，当前版本暂不支持漫画书源")
+        }
+        return nil
+    }
+
     private static func compatibilityIssue(
         searchURL: String,
         object: [String: Any]
@@ -237,7 +322,12 @@ enum BookSourceImporter {
             return String(localized: "搜索请求格式暂不支持")
         }
 
-        let searchRules = object["ruleSearch"] as? [String: Any] ?? [:]
+        guard let searchRules = object["ruleSearch"] as? [String: Any],
+              string(searchRules, "bookList") != nil,
+              string(searchRules, "name") != nil,
+              string(searchRules, "bookUrl") != nil else {
+            return String(localized: "缺少搜索列表、书名或详情地址规则")
+        }
         // Only rules consumed by PureReader should decide whether search is usable.
         // Legado sources often attach JavaScript to optional metadata such as kind
         // or wordCount; disabling the whole source for unused fields hides otherwise
@@ -310,43 +400,126 @@ enum BookSourceImporter {
         return try JSONSerialization.data(withJSONObject: payloads, options: [.prettyPrinted, .sortedKeys])
     }
 
-    /// 内置示例书源（演示规则结构；站点可用性不保证）
+    /// 首次启动时植入经过测试的内置书源，同时清理旧版占位源。
+    ///
+    /// 内置源使用 PureReader 原生 CSS 规则，不依赖 JavaScript。
+    /// 站点可用性随时间变化，用户可在书源管理中一键检测全部。
+    ///
+    /// 添加规则：每个内置源必须经过真实浏览器四步验证：
+    ///   首页可访问 → 搜索出结果 → 目录可解析 → 正文无 Cloudflare
+    /// 未验证的源不可内置。
+    ///
+    /// 迁移策略：每个内置源有稳定的 builtInKey，基于此 key 判断是否已存在。
+    /// 旧 example.com 占位源会被自动清理。
     static func seedBuiltInIfNeeded(context: ModelContext) {
         let descriptor = FetchDescriptor<BookSource>()
         let existing = (try? context.fetch(descriptor)) ?? []
-        if !existing.isEmpty { return }
 
-        // PureReader 演示书源：指向本地可解析的静态 HTML 模板风格规则
-        // 实际用户可导入社区 JSON
-        let demo = BookSource(
-            name: String(localized: "示例书源（需自行导入可用源）"),
-            groupName: String(localized: "内置"),
-            searchURL: "https://www.example.com/search?q={{key}}&page={{page}}",
-            bookURL: "",
-            tocURL: "",
-            contentURL: "",
-            rules: ParseRule(
-                bookList: "div.book-item",
-                name: "h3@text||a@text",
-                author: "span.author@text",
-                intro: "p.intro@text",
-                coverUrl: "img@src",
-                bookUrl: "a@href",
-                tocUrl: nil,
-                chapterList: "ul.chapters li",
-                chapterName: "a@text",
-                chapterUrl: "a@href",
-                content: "div#content@text||div.content@text",
-                nextPage: nil,
-                replaceRegex: nil
+        // 清理旧版 example.com 占位源
+        let legacyDemos = existing.filter {
+            $0.searchURL.contains("www.example.com/search")
+        }
+        for source in legacyDemos {
+            context.delete(source)
+        }
+
+        // 内置源定义：stable key → 构造工厂
+        // 使用搜索 URL 的规范化形式作为稳定 key，精确匹配
+        let builtInDefinitions: [(key: String, factory: () -> BookSource)] = [
+            (
+                "alicesw",
+                {
+                    BookSource(
+                        name: "爱丽丝书屋",
+                        groupName: String(localized: "内置"),
+                        searchURL: "https://www.alicesw.com/search.html?q={{key}}&f=_all",
+                        exploreURL: "推荐::https://www.alicesw.com/all/order/update_time+desc.html"
+                            + "&&排行::https://www.alicesw.com/other/rank_hits/order/hits.html"
+                            + "&&原创::https://www.alicesw.com/original.html",
+                        bookURL: "https://www.alicesw.com",
+                        rules: ParseRule(
+                            bookList: "div.list-group-item",
+                            name: "h5 a@text",
+                            author: "p.mb-1.text-muted a@text",
+                            intro: "p.content-txt@text",
+                            bookUrl: "h5 a@href",
+                            chapterList: "a[href*=\"/book/\"]",
+                            chapterName: "a@text",
+                            chapterUrl: "a@href",
+                            content: "div.read-content@text"
+                        ),
+                        enabled: true,
+                        format: .pureReader,
+                        comment: String(localized: "内置书源，已通过搜索→目录→正文全链路验证。免费小说创作网站。"),
+                        weight: 100
+                    )
+                }
             ),
-            enabled: false,
-            format: .pureReader,
-            comment: String(localized: "占位示例，默认禁用。请从社区导入可用书源。"),
-            weight: 0
-        )
-        context.insert(demo)
-        try? context.save()
+            (
+                "qbtr",
+                {
+                    BookSource(
+                        name: "全本同人小说",
+                        groupName: String(localized: "内置"),
+                        searchURL: "https://www.qbtr.cc/e/search/index.php,"
+                            + "{\"method\":\"POST\",\"body\":\"keyboard={{key}}&show=title&classid=0\",\"charset\":\"gb2312\"}",
+                        exploreURL: "推荐::https://www.qbtr.cc/changgui/"
+                            + "&&同人::https://www.qbtr.cc/tongren/"
+                            + "&&热门::https://www.qbtr.cc/hot/",
+                        bookURL: "https://www.qbtr.cc",
+                        rules: ParseRule(
+                            bookList: "div.bk",
+                            name: "h3@text",
+                            author: "div.booknews@text",
+                            intro: "p@text",
+                            bookUrl: "a@href",
+                            chapterList: "div.book_list ul li",
+                            chapterName: "a@text",
+                            chapterUrl: "a@href",
+                            content: "div.read_chapterDetail@text"
+                        ),
+                        enabled: true,
+                        format: .pureReader,
+                        comment: String(localized: "内置书源，已通过搜索→目录→正文全链路验证。搜索为 POST + GB2312 编码。"),
+                        weight: 80
+                    )
+                }
+            )
+        ]
+
+        // 收集已存在的内置源 key
+        let existingBuiltInKeys = Set(existing.compactMap { source -> String? in
+            for (key, _) in builtInDefinitions {
+                if source.name == builtInName(for: key) { return key }
+            }
+            return nil
+        })
+
+        var inserted = false
+        for (key, factory) in builtInDefinitions {
+            guard !existingBuiltInKeys.contains(key) else { continue }
+            context.insert(factory())
+            inserted = true
+        }
+
+        if inserted || !legacyDemos.isEmpty {
+            do {
+                try context.save()
+            } catch {
+                // 回滚：如果保存失败，回滚所有插入
+                context.rollback()
+                assertionFailure("Failed to persist built-in book sources: \(error)")
+            }
+        }
+    }
+
+    /// 内置源 key → display name 映射
+    private static func builtInName(for key: String) -> String {
+        switch key {
+        case "alicesw": return "爱丽丝书屋"
+        case "qbtr": return "全本同人小说"
+        default: return key
+        }
     }
 
     // MARK: - Parse one
@@ -381,9 +554,13 @@ enum BookSourceImporter {
         let baseURL = sanitizedBaseURL(string(obj, "bookSourceUrl") ?? "")
         guard !search.isEmpty else { throw ImportError.invalidFormat }
         let comment = string(obj, "bookSourceComment") ?? string(obj, "comment") ?? ""
-        let compatibility = compatibilityIssue(searchURL: search, object: obj)
-        let readingIssue = readingCompatibilityIssue(obj)
-        let enabled = (bool(obj, "enabled") ?? true) && compatibility == nil
+        let nativeAdapter = NativeBookSourceAdapter.detect(name: name, bookSourceURL: baseURL)
+        let compatibility = nativeAdapter == nil
+            ? unsupportedNativeIssue(name: name, bookSourceURL: baseURL)
+                ?? compatibilityIssue(searchURL: search, object: obj)
+            : nil
+        let readingIssue = nativeAdapter == nil ? readingCompatibilityIssue(obj) : nil
+        let enabled = (bool(obj, "enabled") ?? true) && (nativeAdapter != nil || compatibility == nil)
         let weight = int(obj, "customOrder") ?? int(obj, "weight") ?? 0
 
         var rules = ParseRule()
@@ -424,25 +601,36 @@ enum BookSourceImporter {
             rules.replaceRegex = string(rc, "replaceRegex")
         }
 
+        let effectiveRules = nativeAdapter == nil ? rules : .empty
+        let nativeNote = nativeAdapter.map {
+            String(localized: "已识别为 \($0.displayName)，跳过原书源 JavaScript，使用 PureReader 原生网络接口")
+        }
+        let effectiveComment = [
+            comment,
+            nativeNote,
+            compatibility.map { appendCompatibilityNote("", issue: $0) },
+            readingIssue.map { appendPartialCompatibilityNote("", issue: $0) }
+        ]
+        .compactMap { $0 }
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n\n")
         let source = BookSource(
             name: name,
             groupName: group,
-            searchURL: search,
-            exploreURL: explore,
-            bookURL: baseURL,
+            searchURL: nativeAdapter?.searchURLTemplate ?? search,
+            exploreURL: nativeAdapter == nil ? explore : "",
+            bookURL: nativeAdapter?.baseURL ?? baseURL,
             tocURL: "",
             contentURL: "",
             headerJSON: headerStorageString(obj["header"]),
-            rules: rules,
-            exploreRules: exploreRules,
+            rules: effectiveRules,
+            exploreRules: nativeAdapter == nil ? exploreRules : nil,
             enabled: enabled,
             format: .legado,
-            comment: compatibility.map { appendCompatibilityNote(comment, issue: $0) }
-                ?? readingIssue.map { appendPartialCompatibilityNote(comment, issue: $0) }
-                ?? comment,
+            comment: effectiveComment,
             weight: weight
         )
-        source.isValid = compatibility == nil
+        source.isValid = nativeAdapter != nil || compatibility == nil
         return source
     }
 

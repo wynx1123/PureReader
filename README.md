@@ -128,3 +128,12 @@ MIT（待 Phase 5 最终确认）
 - **AI 架构**：情节规划 → 正文生成 → 一致性校验 → 必要时自动修订；按位置精确替换
 - **UI**：参考 Apple 图书（封面书衣、暖中性背景、大标题图书 Tab）
 - **书源**：探活检测 + URL 导入合集
+
+## PureReader 1.1（MVP）
+
+- 网络书籍可在书架手动检查更新；按规范化章节 URL 去重并显示新增/未读章数，单书可关闭追更。
+- 支持串行下载当前章、后 20 章或全书，可取消并从失败范围重试。正文缓存位于 Application Support，可手动清除，删除书籍时同步清理。
+- 网络书籍打开时定位第一未读章，阅读进度会更新未读计数；本地 TXT/EPUB 行为不变。
+- 网络正文仅接受 HTTP/HTTPS，单次响应上限 8 MB，跨域正文请求不会携带书源私有 header。
+
+工程文件由 `python3 scripts/generate_pbxproj.py` 生成；CI/本地可用 `python3 scripts/generate_pbxproj.py --check` 检查同步状态。核心算法测试位于 `PureReaderTests/OnlineLibraryServiceTests.swift`，已加入 `PureReaderTests` XCTest target。

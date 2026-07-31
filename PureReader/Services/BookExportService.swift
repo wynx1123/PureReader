@@ -219,7 +219,7 @@ enum BookExportService {
         <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>\(book.title)</title>
+        <title>\(escapeXML(book.title))</title>
         <style>
         body { font-family: -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; max-width: 800px; margin: 0 auto; padding: 20px; line-height: 1.8; color: #333; }
         h1 { text-align: center; border-bottom: 2px solid #eee; padding-bottom: 10px; }
@@ -237,11 +237,11 @@ enum BookExportService {
 
         if options.includeMetadata {
             html += """
-            <h1>\(book.title)</h1>
+            <h1>\(escapeXML(book.title))</h1>
             """
             if !book.author.isEmpty {
                 html += """
-                <p class="author">\(String(localized: "作者：\(book.author)"))</p>
+                <p class="author">\(escapeXML(String(localized: "作者：\(book.author)")))</p>
                 """
             }
         }
@@ -253,13 +253,13 @@ enum BookExportService {
         <ol>
         """
         for (index, ch) in chapters.enumerated() {
-            html += "<li><a href=\"#chapter-\(index + 1)\">\(ch.title)</a></li>"
+            html += "<li><a href=\"#chapter-\(index + 1)\">\(escapeXML(ch.title))</a></li>"
         }
         html += "</ol></div>"
 
         for (index, ch) in chapters.enumerated() {
             guard let text = chapterContent(ch, options: options) else { continue }
-            html += "<h2 id=\"chapter-\(index + 1)\">\(ch.title)</h2>"
+            html += "<h2 id=\"chapter-\(index + 1)\">\(escapeXML(ch.title))</h2>"
             html += "<div class=\"chapter-content\">"
             let paragraphs = text.components(separatedBy: "\n").filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
             for paragraph in paragraphs {
@@ -268,9 +268,9 @@ enum BookExportService {
                         of: ChapterRichContent.imagePlaceholder,
                         with: String(localized: "[图片]")
                     )
-                    html += "<p>\(cleaned)</p>"
+                    html += "<p>\(escapeXML(cleaned))</p>"
                 } else {
-                    html += "<p>\(paragraph)</p>"
+                    html += "<p>\(escapeXML(paragraph))</p>"
                 }
             }
             html += "</div>"
@@ -335,8 +335,8 @@ enum BookExportService {
         <?xml version="1.0" encoding="UTF-8"?>
         <package version="3.0" unique-identifier="book-id" xmlns="http://www.idpf.org/2007/opf">
             <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-                <dc:title>\(book.title)</dc:title>
-                <dc:creator>\(book.author)</dc:creator>
+                <dc:title>\(escapeXML(book.title))</dc:title>
+                <dc:creator>\(escapeXML(book.author))</dc:creator>
                 <dc:language>zh-CN</dc:language>
                 <dc:identifier id="book-id">\(book.id.uuidString)</dc:identifier>
             </metadata>
@@ -364,7 +364,7 @@ enum BookExportService {
             let cleaned = options.replaceImagePlaceholders
                 ? line.replacingOccurrences(of: ChapterRichContent.imagePlaceholder, with: String(localized: "[图片]"))
                 : line
-            paragraphs += "<p>\(cleaned)</p>\n"
+            paragraphs += "<p>\(escapeXML(cleaned))</p>\n"
         }
 
         return """
@@ -372,15 +372,28 @@ enum BookExportService {
         <!DOCTYPE html>
         <html xmlns="http://www.w3.org/1999/xhtml">
         <head>
-        <title>\(title)</title>
+        <title>\(escapeXML(title))</title>
         <meta charset="UTF-8"/>
         </head>
         <body>
-        <h1>\(title)</h1>
+        <h1>\(escapeXML(title))</h1>
         \(paragraphs)
         </body>
         </html>
         """
+    }
+
+    static func escapedXMLForTesting(_ value: String) -> String {
+        escapeXML(value)
+    }
+
+    private static func escapeXML(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&apos;")
     }
 
     // MARK: - Chapter content resolution
@@ -388,10 +401,9 @@ enum BookExportService {
     /// 解析章节正文：优先内存内容，其次离线缓存。
     private static func chapterContent(_ chapter: Chapter, options: BookExportOptions) -> String? {
         let memoryContent = chapter.content.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !memoryContent.isEmpty {
+        if !options.onlyCachedChapters, !memoryContent.isEmpty {
             return memoryContent
         }
-        guard !options.onlyCachedChapters else { return nil }
         if let path = chapter.offlineCachePath, !path.isEmpty,
            let cached = try? OnlineLibraryService.cachedText(relativePath: path) {
             let trimmed = cached.trimmingCharacters(in: .whitespacesAndNewlines)

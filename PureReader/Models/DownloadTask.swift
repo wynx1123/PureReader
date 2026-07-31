@@ -31,6 +31,7 @@ enum ChapterCacheStatus: String, Codable, Sendable, CaseIterable {
     case cached
     case failed
     case invalid
+    case cancelled
 }
 
 // MARK: - DownloadTask (SwiftData)

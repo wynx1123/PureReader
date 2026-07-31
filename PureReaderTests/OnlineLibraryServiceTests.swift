@@ -133,6 +133,39 @@ final class OnlineLibraryServiceTests: XCTestCase {
         XCTAssertTrue(aligned.items.last?.isRetainedRemoteDeletion == true)
     }
 
+    @MainActor
+    func testExportOnlyCachedModeUsesDiskCacheInsteadOfTransientMemory() throws {
+        let bookID = UUID()
+        let chapterID = UUID()
+        let path = try OnlineLibraryService.writeCachedText(
+            "cached body",
+            bookID: bookID,
+            chapterID: chapterID
+        )
+        defer { try? OnlineLibraryService.purgeCache(bookID: bookID) }
+
+        let book = Book(id: bookID, title: "Cached export")
+        let chapter = Chapter(id: chapterID, index: 0, title: "One", content: "memory body")
+        chapter.offlineCachePath = path
+
+        let url = try BookExportService.export(
+            book: book,
+            chapters: [chapter],
+            format: .txt,
+            options: .cachedOnly
+        )
+        let exported = try String(contentsOf: url, encoding: .utf8)
+        XCTAssertTrue(exported.contains("cached body"))
+        XCTAssertFalse(exported.contains("memory body"))
+    }
+
+    func testEPUBXMLContentIsEscaped() {
+        XCTAssertEqual(
+            BookExportService.escapedXMLForTesting("A&B <tag> \"quote\" 'single'"),
+            "A&amp;B &lt;tag&gt; &quot;quote&quot; &apos;single&apos;"
+        )
+    }
+
     func testCacheGenerationRejectsStaleAsyncWork() {
         XCTAssertTrue(OnlineLibraryService.generationIsCurrent(captured: 7, current: 7))
         XCTAssertFalse(OnlineLibraryService.generationIsCurrent(captured: 7, current: 8))

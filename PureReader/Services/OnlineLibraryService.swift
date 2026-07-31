@@ -195,89 +195,108 @@ enum OnlineLibraryService {
         let bookURL = book.sourceURL
         let bookID = book.id
 
-        // 缓存有效性检查结果：每个索引对应的缓存是否有效
-        // (index, isValidCache: Bool, stalePath: String?)
-        typealias CacheCheck = (Int, Bool, String?)
+        struct DownloadCandidate: Sendable {
+            let index: Int
+            let chapterID: UUID
+            let sourceURL: String
+            let cachedPath: String?
+        }
+        enum CacheOutcome: Sendable {
+            case cached(index: Int, path: String?)
+            case failed(index: Int, stalePath: String?)
+        }
 
-        await withTaskGroup(of: CacheCheck.self) { group in
+        // SwiftData models are main-actor objects. Capture only value snapshots
+        // before adding child tasks, then apply the results back on MainActor.
+        let work = candidates.enumerated().compactMap { index, chapter -> DownloadCandidate? in
+            guard let sourceURL = chapter.sourceURL, !sourceURL.isEmpty else { return nil }
+            return DownloadCandidate(
+                index: index,
+                chapterID: chapter.id,
+                sourceURL: sourceURL,
+                cachedPath: chapter.offlineCachePath
+            )
+        }
+
+        await withTaskGroup(of: CacheOutcome.self) { group in
             let maxConcurrent = 3
             var running = 0
             var nextIndex = 0
 
             func fillGroup() {
-                while running < maxConcurrent, nextIndex < candidates.count {
-                    let idx = nextIndex
-                    let chapter = candidates[idx]
+                while !Task.isCancelled, running < maxConcurrent, nextIndex < work.count {
+                    let candidate = work[nextIndex]
                     nextIndex += 1
                     running += 1
                     group.addTask {
+                        guard !Task.isCancelled else {
+                            return .failed(index: candidate.index, stalePath: nil)
+                        }
                         // 检查已有缓存是否有效——只有实际读取成功才算有效
-                        if let path = chapter.offlineCachePath, !path.isEmpty {
+                        if let path = candidate.cachedPath, !path.isEmpty {
                             do {
                                 _ = try OnlineLibraryService.cachedText(relativePath: path)
-                                return (idx, true, nil) // 缓存有效，无需重新下载
+                                return .cached(index: candidate.index, path: nil)
                             } catch {
-                                // 缓存损坏/文件丢失，记下失效路径，继续重新下载
-                                return (idx, false, path)
+                                // 旧缓存无效时继续下载；若下载失败再清理引用。
                             }
                         }
-                        // 无缓存，正常下载
                         do {
                             let text = try await BookSourceEngine.fetchContent(
-                                chapterURL: chapter.sourceURL!,
+                                chapterURL: candidate.sourceURL,
                                 source: source,
                                 currentBookURL: bookURL
                             )
+                            try Task.checkCancellation()
                             let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                             guard !trimmed.isEmpty else { throw BookSourceError.empty }
                             let newPath = try OnlineLibraryService.writeCachedText(
                                 trimmed,
                                 bookID: bookID,
-                                chapterID: chapter.id
+                                chapterID: candidate.chapterID
                             )
-                            return (idx, true, newPath)
+                            return .cached(index: candidate.index, path: newPath)
                         } catch {
-                            return (idx, false, nil)
+                            return .failed(index: candidate.index, stalePath: candidate.cachedPath)
                         }
                     }
                 }
             }
 
             fillGroup()
-            for await (idx, isSuccess, path) in group {
+            for await outcome in group {
                 running -= 1
-
-                if isSuccess {
+                let idx: Int
+                switch outcome {
+                case .cached(let index, let path):
+                    idx = index
                     completed += 1
-                    // 回写缓存路径到 SwiftData 模型，确保阅读器能找到离线文件
                     let chapter = candidates[idx]
                     if let path {
                         chapter.offlineCachePath = path
                         chapter.offlineCachedAt = Date()
                     }
-                    // 已有缓存但未重新下载的情况：path 为 nil，
-                    // 此时 offlineCachePath 和 offlineCachedAt 保持不变
-                } else {
+                case .failed(let index, let stalePath):
+                    idx = index
                     failed += 1
-                    // 清理失效的缓存引用
                     let chapter = candidates[idx]
-                    if path != nil {
-                        // path 非 nil 表示旧缓存损坏，清理引用
+                    if stalePath != nil {
                         chapter.offlineCachePath = nil
                         chapter.offlineCachedAt = nil
                     }
                 }
 
-                let chapterTitle = idx < candidates.count
-                    ? candidates[idx].title
-                    : ""
                 await onProgress(DownloadProgress(
                     completed: completed,
                     total: total,
                     failed: failed,
-                    currentChapter: chapterTitle
+                    currentChapter: candidates[idx].title
                 ))
-                fillGroup()
+                if Task.isCancelled {
+                    group.cancelAll()
+                } else {
+                    fillGroup()
+                }
             }
         }
 

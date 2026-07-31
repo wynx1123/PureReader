@@ -165,6 +165,7 @@ final class DownloadManager {
         let descriptor = FetchDescriptor<DownloadTask>(
             predicate: #Predicate { task in
                 task.statusRaw != "completed"
+                    && task.statusRaw != "completedWithFailures"
                     && task.statusRaw != "cancelled"
                     && task.statusRaw != "failed"
             }

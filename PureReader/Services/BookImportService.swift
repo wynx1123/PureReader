@@ -333,6 +333,17 @@ enum BookImportService {
                 context.delete(a)
             }
         }
+        // 下载任务仅通过 UUID 关联，无法依赖 SwiftData 级联删除。
+        let downloadDescriptor = FetchDescriptor<DownloadTask>()
+        let downloadTasks = ((try? context.fetch(downloadDescriptor)) ?? []).filter { $0.bookID == bid }
+        let taskIDs = Set(downloadTasks.map(\.id))
+        let itemDescriptor = FetchDescriptor<DownloadTaskItem>()
+        if let items = try? context.fetch(itemDescriptor) {
+            for item in items where taskIDs.contains(item.taskID) {
+                context.delete(item)
+            }
+        }
+        for task in downloadTasks { context.delete(task) }
         context.delete(book)
         try context.save()
         // 向量索引与记忆锚点在 Application Support 下，SwiftData 不会级联删除；

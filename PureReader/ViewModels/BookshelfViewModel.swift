@@ -463,7 +463,10 @@ final class BookshelfViewModel {
                 fetched: fetched
             )
             let currentID = existing.first(where: { $0.index == book.currentChapterIndex })?.id
-            let previouslyReadIDs = Set(existing.filter { $0.index <= book.highestReadChapterIndex }.map(\.id))
+            let legacyReadBaseline = book.highestReadChapterIndex >= 0
+                ? book.highestReadChapterIndex
+                : max(-1, book.currentChapterIndex - (book.currentPageOffset == 0 ? 1 : 0))
+            let previouslyReadIDs = Set(existing.filter { $0.index <= legacyReadBaseline }.map(\.id))
             let oldUnreadCount = book.unreadChapterCount
             let oldFirstUnread = book.firstUnreadChapterIndex
             let oldTotal = book.totalChapters

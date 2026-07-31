@@ -1607,7 +1607,12 @@ enum BookSourceEngine {
 
         var request = URLRequest(url: url)
         request.httpMethod = options.method
-        for (name, value) in parseHeaders(sourceHeaderJSON) {
+        let trustedURL = URL(string: baseURL)
+        for (name, value) in scopedHeaders(
+            sourceHeaderJSON,
+            target: url,
+            trustedSource: trustedURL
+        ) {
             request.setValue(value, forHTTPHeaderField: name)
         }
         for (name, value) in options.headers {

@@ -61,7 +61,7 @@ enum CacheIntegrityService {
             }
         }
 
-        let orphans = findOrphanFiles(for: book.id)
+        let orphans = findOrphanFiles(for: book.id, referencedPaths: referencedCachePaths(in: chapters))
 
         return CacheIntegrityReport(
             bookID: book.id,
@@ -109,7 +109,7 @@ enum CacheIntegrityService {
             ))
         }
 
-        let orphans = findOrphanFiles(for: book.id)
+        let orphans = findOrphanFiles(for: book.id, referencedPaths: referencedCachePaths(in: chapters))
 
         let report = CacheIntegrityReport(
             bookID: book.id,
@@ -168,8 +168,12 @@ enum CacheIntegrityService {
 
     /// 清理孤立缓存文件（文件存在但无数据库引用）。
     /// - Returns: 清理的文件数
-    static func cleanupOrphanFiles(for bookID: UUID) -> Int {
-        let orphans = findOrphanFiles(for: bookID)
+    static func cleanupOrphanFiles(for book: Book) -> Int {
+        let chapters = book.chapters ?? []
+        let orphans = findOrphanFiles(
+            for: book.id,
+            referencedPaths: referencedCachePaths(in: chapters)
+        )
         var cleaned = 0
         for relativePath in orphans {
             do {
@@ -233,7 +237,17 @@ private extension CacheIntegrityService {
     }
 
     /// 扫描缓存目录，返回没有数据库引用的文件相对路径。
-    private static func findOrphanFiles(for bookID: UUID) -> [String] {
+    private static func referencedCachePaths(in chapters: [Chapter]) -> Set<String> {
+        Set(chapters.compactMap { chapter in
+            guard let path = chapter.offlineCachePath, !path.isEmpty else { return nil }
+            return path
+        })
+    }
+
+    private static func findOrphanFiles(
+        for bookID: UUID,
+        referencedPaths: Set<String>
+    ) -> [String] {
         guard let bookDir = try? applicationSupportDirectory()
             .appendingPathComponent("OfflineChapters", isDirectory: true)
             .appendingPathComponent(bookID.uuidString, isDirectory: true),
@@ -245,7 +259,8 @@ private extension CacheIntegrityService {
         return fileNames.compactMap { fileName -> String? in
             let relativePath = "OfflineChapters/\(bookID.uuidString)/\(fileName)"
             let uuidString = (fileName as NSString).deletingPathExtension
-            guard UUID(uuidString: uuidString) != nil else { return nil }
+            guard UUID(uuidString: uuidString) != nil,
+                  !referencedPaths.contains(relativePath) else { return nil }
             return relativePath
         }
     }

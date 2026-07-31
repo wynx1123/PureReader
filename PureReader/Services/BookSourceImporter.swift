@@ -58,13 +58,13 @@ enum BookSourceImporter {
 
         let existing = (try? context.fetch(FetchDescriptor<BookSource>())) ?? []
         var existingByKey: [String: BookSource] = [:]
-        var duplicateExisting: [BookSource] = []
+        var duplicateExisting: [(duplicate: BookSource, retained: BookSource)] = []
         for source in existing {
             let key = identityKey(source)
-            if existingByKey[key] == nil {
-                existingByKey[key] = source
+            if let retained = existingByKey[key] {
+                duplicateExisting.append((source, retained))
             } else {
-                duplicateExisting.append(source)
+                existingByKey[key] = source
             }
         }
         var changed = 0
@@ -86,8 +86,15 @@ enum BookSourceImporter {
                 }
                 changed += 1
             }
-            for duplicate in duplicateExisting {
-                context.delete(duplicate)
+            if !duplicateExisting.isEmpty {
+                let books = (try? context.fetch(FetchDescriptor<Book>())) ?? []
+                for pair in duplicateExisting {
+                    for book in books where book.bookSourceID == pair.duplicate.id {
+                        book.bookSourceID = pair.retained.id
+                        book.sourceName = pair.retained.name
+                    }
+                    context.delete(pair.duplicate)
+                }
             }
             try context.save()
             return ImportResult(

@@ -456,18 +456,23 @@ enum BookSourceImporter {
                         bookURL: "https://www.alicesw.com",
                         rules: ParseRule(
                             bookList: "div.list-group-item",
-                            name: "h5 a@text",
-                            author: "p.mb-1.text-muted a@text",
+                            name: "h5 a@text##^\\s*\\d+\\.\\s*##",
+                            author: "p.mb-1 a@text",
                             intro: "p.content-txt@text",
                             bookUrl: "h5 a@href",
-                            chapterList: "a[href*=\"/book/\"]",
+                            chapterList: "ul.section-list li",
                             chapterName: "a@text",
                             chapterUrl: "a@href",
-                            content: "div.read-content@text"
+                            content: "div.content_txt@text"
+                        ),
+                        exploreRules: ParseRule(
+                            bookList: "ul.txt-list li",
+                            name: "span.s2 a@text##^\\s*\\[[^]]+\\]\\s*##",
+                            bookUrl: "span.s2 a@href"
                         ),
                         enabled: true,
                         format: .pureReader,
-                        comment: String(localized: "内置书源，已通过搜索→目录→正文全链路验证。免费小说创作网站。"),
+                        comment: String(localized: "内置书源，已于 2026-07-31 通过搜索→目录→正文及发现页全链路验证。"),
                         weight: 100
                     )
                 }
@@ -478,59 +483,98 @@ enum BookSourceImporter {
                     BookSource(
                         name: "全本同人小说",
                         groupName: String(localized: "内置"),
-                        searchURL: "https://www.qbtr.cc/e/search/index.php,"
+                        searchURL: "https://www.qbtr.org/e/search/index.php,"
                             + "{\"method\":\"POST\",\"body\":\"keyboard={{key}}&show=title&classid=0\",\"charset\":\"gb2312\"}",
-                        exploreURL: "推荐::https://www.qbtr.cc/changgui/"
-                            + "&&同人::https://www.qbtr.cc/tongren/"
-                            + "&&热门::https://www.qbtr.cc/hot/",
-                        bookURL: "https://www.qbtr.cc",
+                        exploreURL: "推荐::https://www.qbtr.org/changgui/"
+                            + "&&同人::https://www.qbtr.org/tongren/"
+                            + "&&热门::https://www.qbtr.org/hot/",
+                        bookURL: "https://www.qbtr.org",
                         rules: ParseRule(
                             bookList: "div.bk",
                             name: "h3@text",
-                            author: "div.booknews@text",
+                            author: "div.booknews@text##^作者[:：]\\s*(.*?)(?:\\s+\\d+(?:\\.\\d+)?\\s*MB)?\\s+\\d{4}-\\d{2}-\\d{2}$##$1",
                             intro: "p@text",
                             bookUrl: "a@href",
                             chapterList: "div.book_list ul li",
                             chapterName: "a@text",
                             chapterUrl: "a@href",
-                            content: "div.read_chapterDetail@text"
+                            content: "div.read_chapterDetail@text",
+                            replaceRegex: "(?s)^.*?(?=第[零〇一二三四五六七八九十百千万两0-9]+[章节回][：:])##"
+                        ),
+                        exploreRules: ParseRule(
+                            bookList: "div.bk",
+                            name: "h3@text",
+                            author: "div.booknews@text##^作者[:：]\\s*(.*?)(?:\\s+\\d+(?:\\.\\d+)?\\s*MB)?\\s+\\d{4}-\\d{2}-\\d{2}$##$1",
+                            intro: "p@text",
+                            bookUrl: "a@href"
                         ),
                         enabled: true,
                         format: .pureReader,
-                        comment: String(localized: "内置书源，已通过搜索→目录→正文全链路验证。搜索为 POST + GB2312 编码。"),
+                        comment: String(localized: "内置书源，已于 2026-07-31 通过搜索→目录→正文及发现页全链路验证。搜索为 POST + GB2312 编码。"),
                         weight: 80
                     )
                 }
             )
         ]
 
-        // 收集已存在的内置源 key（基于名称匹配）
-        let existingBuiltInKeys = Set(existing.compactMap { source -> String? in
-            for (key, _) in builtInDefinitions {
-                if source.name == builtInName(for: key) { return key }
-            }
-            return nil
-        })
-
-        var inserted = false
+        // 内置源规则属于应用配置，需要随版本修复；但保留用户手动启用/停用状态。
+        var insertedCount = 0
+        var updatedCount = 0
         for (key, factory) in builtInDefinitions {
-            guard !existingBuiltInKeys.contains(key) else { continue }
-            context.insert(factory())
-            inserted = true
+            let definition = factory()
+            let current = existing.first { source in
+                source.name == builtInName(for: key) || matchesBuiltInIdentity(source, key: key)
+            }
+            if let current {
+                guard !hasSameBuiltInConfiguration(current, definition) else { continue }
+                let wasEnabled = current.enabled
+                update(current, from: definition)
+                current.enabled = wasEnabled
+                updatedCount += 1
+            } else {
+                context.insert(definition)
+                insertedCount += 1
+            }
         }
 
-        if inserted || !legacyDemos.isEmpty {
+        if insertedCount > 0 || updatedCount > 0 || !legacyDemos.isEmpty {
             do {
                 try context.save()
-                if inserted {
-                    Logger.bookSource.info("Seeded \(builtInDefinitions.count - existingBuiltInKeys.count) built-in book sources")
-                }
+                Logger.bookSource.info(
+                    "Reconciled built-in book sources: inserted=\(insertedCount), updated=\(updatedCount)"
+                )
             } catch {
                 context.rollback()
                 Logger.bookSource.error("Failed to persist built-in book sources: \(error.localizedDescription)")
                 assertionFailure("Failed to persist built-in book sources: \(error)")
             }
         }
+    }
+
+    private static func matchesBuiltInIdentity(_ source: BookSource, key: String) -> Bool {
+        let urls = [source.searchURL, source.exploreURL, source.bookURL]
+            .joined(separator: " ")
+            .lowercased()
+        switch key {
+        case "alicesw": return urls.contains("alicesw.com")
+        case "qbtr": return urls.contains("qbtr.cc") || urls.contains("qbtr.org")
+        default: return false
+        }
+    }
+
+    private static func hasSameBuiltInConfiguration(_ lhs: BookSource, _ rhs: BookSource) -> Bool {
+        lhs.name == rhs.name
+            && lhs.groupName == rhs.groupName
+            && lhs.searchURL == rhs.searchURL
+            && lhs.exploreURL == rhs.exploreURL
+            && lhs.bookURL == rhs.bookURL
+            && lhs.tocURL == rhs.tocURL
+            && lhs.contentURL == rhs.contentURL
+            && lhs.headerJSON == rhs.headerJSON
+            && lhs.ruleJSON == rhs.ruleJSON
+            && lhs.exploreRuleJSON == rhs.exploreRuleJSON
+            && lhs.formatRaw == rhs.formatRaw
+            && lhs.weight == rhs.weight
     }
 
     /// 内置源 key → display name 映射

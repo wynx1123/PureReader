@@ -166,6 +166,53 @@ final class OnlineLibraryServiceTests: XCTestCase {
         )
     }
 
+    func testBuiltInAliceRulesMatchCurrentMarkup() {
+        let searchHTML = """
+        <div class="list-group-item">
+          <h5><a href="/novel/42573.html">就业推荐法案</a></h5>
+          <p class="mb-1 text-muted">作者：<a href="/search?q=author">作者名</a></p>
+          <p class="content-txt">简介内容</p>
+        </div>
+        """
+        let searchBlocks = RuleParser.getStrings(from: searchHTML, rule: "div.list-group-item")
+        XCTAssertEqual(searchBlocks.count, 1)
+        XCTAssertEqual(RuleParser.getString(from: searchBlocks[0], rule: "h5 a@text"), "就业推荐法案")
+        XCTAssertEqual(RuleParser.getString(from: searchBlocks[0], rule: "h5 a@href", baseURL: URL(string: "https://www.alicesw.com")), "https://www.alicesw.com/novel/42573.html")
+
+        let tocHTML = "<ul class=\"section-list fix\"><li><a href=\"/book/44049/1.html\">全1章</a></li></ul>"
+        let tocBlocks = RuleParser.getStrings(from: tocHTML, rule: "ul.section-list li")
+        XCTAssertEqual(tocBlocks.count, 1)
+        XCTAssertEqual(RuleParser.getString(from: tocBlocks[0], rule: "a@text"), "全1章")
+
+        let contentHTML = "<div class=\"content_txt\"><p>第一段</p><p>第二段</p></div>"
+        XCTAssertEqual(
+            RuleParser.getString(from: contentHTML, rule: "div.content_txt@text"),
+            "第一段\n第二段"
+        )
+    }
+
+    func testBuiltInQBTRRulesDoNotTruncateLargeCatalog() {
+        let chapters = (1...402).map { index in
+            "<li><a href=\"/tongren/9872/\(index).html\">第\(index)节</a></li>"
+        }.joined()
+        let html = "<div class=\"book_list\"><ul>\(chapters)</ul></div>"
+        let blocks = RuleParser.getStrings(
+            from: html,
+            rule: "div.book_list ul li",
+            limit: 5_000
+        )
+        XCTAssertEqual(blocks.count, 402)
+        XCTAssertEqual(RuleParser.getString(from: blocks.last ?? "", rule: "a@text"), "第402节")
+        XCTAssertEqual(
+            RuleParser.getString(
+                from: blocks.last ?? "",
+                rule: "a@href",
+                baseURL: URL(string: "https://www.qbtr.org/tongren/9872.html")
+            ),
+            "https://www.qbtr.org/tongren/9872/402.html"
+        )
+    }
+
     func testCacheGenerationRejectsStaleAsyncWork() {
         XCTAssertTrue(OnlineLibraryService.generationIsCurrent(captured: 7, current: 7))
         XCTAssertFalse(OnlineLibraryService.generationIsCurrent(captured: 7, current: 8))

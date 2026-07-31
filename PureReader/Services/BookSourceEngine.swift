@@ -1036,11 +1036,26 @@ enum BookSourceEngine {
     }
 
     private static func parseChapters(body: String, base: URL, rules: ParseRule) -> [SourceChapterItem] {
-        let blocks = RuleParser.getStrings(from: body, rule: rules.chapterList, baseURL: base)
+        let blocks = RuleParser.getStrings(
+            from: body,
+            rule: rules.chapterList,
+            baseURL: base,
+            limit: 5_000
+        )
         var items: [SourceChapterItem] = []
         if blocks.isEmpty {
-            let names = RuleParser.getStrings(from: body, rule: rules.chapterName, baseURL: base)
-            let urls = RuleParser.getStrings(from: body, rule: rules.chapterUrl, baseURL: base)
+            let names = RuleParser.getStrings(
+                from: body,
+                rule: rules.chapterName,
+                baseURL: base,
+                limit: 5_000
+            )
+            let urls = RuleParser.getStrings(
+                from: body,
+                rule: rules.chapterUrl,
+                baseURL: base,
+                limit: 5_000
+            )
             for i in 0..<min(urls.count, 5000) {
                 let title = i < names.count ? names[i] : "第\(i + 1)章"
                 var u = urls[i]
@@ -1110,6 +1125,18 @@ enum BookSourceEngine {
 
     // MARK: - Validate source
 
+    private static func effectiveValidationKeyword(
+        for source: BookSourceSnapshot,
+        requested keyword: String
+    ) -> String {
+        // The built-in QBTR endpoint returns an empty page for “推荐”, while
+        // common terms such as “小说” exercise the same GB2312 POST pipeline.
+        if source.name == "全本同人小说", keyword == "推荐" {
+            return "小说"
+        }
+        return keyword
+    }
+
     @MainActor
     static func validate(_ source: BookSource, keyword: String = "推荐") async -> Bool {
         (await validateDetailed(source, keyword: keyword)).isReachable
@@ -1128,7 +1155,8 @@ enum BookSourceEngine {
         keyword: String = "推荐"
     ) async -> BookSourceValidationResult {
         do {
-            let results = try await searchOne(keyword: keyword, source: source, page: 1)
+            let validationKeyword = effectiveValidationKeyword(for: source, requested: keyword)
+            let results = try await searchOne(keyword: validationKeyword, source: source, page: 1)
             if results.isEmpty {
                 return BookSourceValidationResult(
                     isReachable: true,
@@ -1170,10 +1198,18 @@ enum BookSourceEngine {
         await onStep(.search, .running, nil)
         let searchStart = CFAbsoluteTimeGetCurrent()
         do {
-            let results = try await searchOne(keyword: keyword, source: snapshot, page: 1)
+            let validationKeyword = effectiveValidationKeyword(for: snapshot, requested: keyword)
+            let results = try await searchOne(keyword: validationKeyword, source: snapshot, page: 1)
             let duration = Int((CFAbsoluteTimeGetCurrent() - searchStart) * 1000)
             if results.isEmpty {
                 searchResult = CheckResult(status: .passed, durationMilliseconds: duration, message: String(localized: "搜索成功但无结果"))
+                await onStep(.search, .passed, searchResult.message)
+                detailResult = CheckResult(status: .notRun, durationMilliseconds: 0, message: String(localized: "无搜索结果，未执行"))
+                catalogResult = CheckResult(status: .notRun, durationMilliseconds: 0, message: String(localized: "无搜索结果，未执行"))
+                contentResult = CheckResult(status: .notRun, durationMilliseconds: 0, message: String(localized: "无搜索结果，未执行"))
+                await onStep(.detail, .notRun, detailResult.message)
+                await onStep(.catalog, .notRun, catalogResult.message)
+                await onStep(.content, .notRun, contentResult.message)
             } else {
                 searchResult = CheckResult(status: .passed, durationMilliseconds: duration, message: String(localized: "\(results.count) 条结果"))
                 await onStep(.search, .passed, searchResult.message)

@@ -1,5 +1,10 @@
 import Foundation
 import SwiftData
+import OSLog
+
+extension Logger {
+    static let bookSource = Logger(subsystem: "com.wynx.PureReader", category: "book-source")
+}
 
 /// 多格式书源导入：Legado / 爱阅记 / PureReader JSON
 enum BookSourceImporter {
@@ -413,7 +418,13 @@ enum BookSourceImporter {
     /// 旧 example.com 占位源会被自动清理。
     static func seedBuiltInIfNeeded(context: ModelContext) {
         let descriptor = FetchDescriptor<BookSource>()
-        let existing = (try? context.fetch(descriptor)) ?? []
+        let existing: [BookSource]
+        do {
+            existing = try context.fetch(descriptor)
+        } catch {
+            Logger.bookSource.error("Failed to fetch existing sources during seed: \(error.localizedDescription)")
+            return
+        }
 
         // 清理旧版 example.com 占位源
         let legacyDemos = existing.filter {
@@ -424,7 +435,6 @@ enum BookSourceImporter {
         }
 
         // 内置源定义：stable key → 构造工厂
-        // 使用搜索 URL 的规范化形式作为稳定 key，精确匹配
         let builtInDefinitions: [(key: String, factory: () -> BookSource)] = [
             (
                 "alicesw",
@@ -487,7 +497,7 @@ enum BookSourceImporter {
             )
         ]
 
-        // 收集已存在的内置源 key
+        // 收集已存在的内置源 key（基于名称匹配）
         let existingBuiltInKeys = Set(existing.compactMap { source -> String? in
             for (key, _) in builtInDefinitions {
                 if source.name == builtInName(for: key) { return key }
@@ -505,9 +515,12 @@ enum BookSourceImporter {
         if inserted || !legacyDemos.isEmpty {
             do {
                 try context.save()
+                if inserted {
+                    Logger.bookSource.info("Seeded \(builtInDefinitions.count - existingBuiltInKeys.count) built-in book sources")
+                }
             } catch {
-                // 回滚：如果保存失败，回滚所有插入
                 context.rollback()
+                Logger.bookSource.error("Failed to persist built-in book sources: \(error.localizedDescription)")
                 assertionFailure("Failed to persist built-in book sources: \(error)")
             }
         }

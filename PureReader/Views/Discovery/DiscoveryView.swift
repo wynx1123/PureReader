@@ -80,6 +80,7 @@ struct DiscoveryView: View {
                 Text(viewModel.errorMessage ?? "")
             }
             .task {
+                BookSourceImporter.seedBuiltInIfNeeded(context: modelContext)
                 viewModel.loadDiscovery(sources: sources)
             }
             .onChange(of: sources.count) { _, _ in

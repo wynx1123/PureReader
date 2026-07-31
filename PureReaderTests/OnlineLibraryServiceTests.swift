@@ -213,6 +213,62 @@ final class OnlineLibraryServiceTests: XCTestCase {
         )
     }
 
+
+    func testBuiltInAliceCatalogUsesDedicatedFullCatalogMarkup() {
+        let chapters = (1...12).map { index in
+            #"<li><a href="/book/8487/hash\#(index).html">第\#(index)章</a></li>"#
+        }.joined()
+        let html = #"<ul class="mulu_list">\#(chapters)</ul>"#
+        let items = BookSourceEngine.parseChaptersForTesting(
+            body: html,
+            base: URL(string: "https://www.alicesw.com/other/chapters/id/8289.html")!,
+            rules: ParseRule(
+                chapterList: "ul.mulu_list li",
+                chapterName: "a@text",
+                chapterUrl: "a@href"
+            )
+        )
+        XCTAssertEqual(items.count, 12)
+        XCTAssertEqual(items.first?.title, "第1章")
+        XCTAssertEqual(items.first?.url, "https://www.alicesw.com/book/8487/hash1.html")
+        XCTAssertEqual(items.last?.index, 11)
+    }
+
+    func testBuiltInQBTRCatalogSortsNumericallyAndDoesNotStartAtRecentChapter() {
+        let numbers = Array(1...475).reversed()
+        let links = numbers.map { number in
+            #"<li><a href="/tongren/9948/\#(number).html">第\#(number)章</a></li>"#
+        }.joined()
+        let html = #"<div class="book_list"><ul>\#(links)</ul></div>"#
+        let items = BookSourceEngine.parseChaptersForTesting(
+            body: html,
+            base: URL(string: "https://www.qbtr.org/tongren/9948.html")!,
+            rules: ParseRule(
+                chapterList: "div.book_list ul li",
+                chapterName: "a@text",
+                chapterUrl: "a@href"
+            )
+        )
+        XCTAssertEqual(items.count, 475)
+        XCTAssertEqual(URL(string: items.first?.url ?? "")?.lastPathComponent, "1.html")
+        XCTAssertEqual(URL(string: items.last?.url ?? "")?.lastPathComponent, "475.html")
+        XCTAssertEqual(items.map(\.index), Array(0..<475))
+    }
+
+    func testCoverFallbackPrefersBookCoverAndLazyLoadedURL() {
+        let html = """
+        <img src="/template/icon.svg">
+        <img class="lazyload_book_cover fengmian2" src="/placeholder.webp" data-src="https://img.example.com/actual.webp">
+        """
+        XCTAssertEqual(
+            BookSourceEngine.extractCoverURLForTesting(
+                body: html,
+                base: URL(string: "https://www.alicesw.com/novel/8289.html")!
+            ),
+            "https://img.example.com/actual.webp"
+        )
+    }
+
     func testCacheGenerationRejectsStaleAsyncWork() {
         XCTAssertTrue(OnlineLibraryService.generationIsCurrent(captured: 7, current: 7))
         XCTAssertFalse(OnlineLibraryService.generationIsCurrent(captured: 7, current: 8))

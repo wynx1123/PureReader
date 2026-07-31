@@ -454,13 +454,15 @@ enum BookSourceImporter {
                             + "&&排行::https://www.alicesw.com/other/rank_hits/order/hits.html"
                             + "&&原创::https://www.alicesw.com/original.html",
                         bookURL: "https://www.alicesw.com",
+                        tocURL: "https://www.alicesw.com/other/chapters/id/{{bookID}}.html",
                         rules: ParseRule(
                             bookList: "div.list-group-item",
                             name: "h5 a@text##^\\s*\\d+\\.\\s*##",
                             author: "p.mb-1 a@text",
                             intro: "p.content-txt@text",
+                            coverUrl: "img.lazyload_book_cover@data-src||img.lazyload_book_cover@src",
                             bookUrl: "h5 a@href",
-                            chapterList: "ul.section-list li",
+                            chapterList: "ul.mulu_list li",
                             chapterName: "a@text",
                             chapterUrl: "a@href",
                             content: "div.content_txt@text"

@@ -1013,6 +1013,14 @@ enum BookSourceEngine {
         tocURLString = tocURLString
             .replacingOccurrences(of: "{{bookUrl}}", with: bookURL)
             .replacingOccurrences(of: "{bookUrl}", with: bookURL)
+        let bookID = builtInBookID(from: bookURL)
+        if let bookID {
+            tocURLString = tocURLString
+                .replacingOccurrences(of: "{{bookID}}", with: bookID)
+                .replacingOccurrences(of: "{{bookId}}", with: bookID)
+                .replacingOccurrences(of: "{bookID}", with: bookID)
+                .replacingOccurrences(of: "{bookId}", with: bookID)
+        }
         if tocURLString.isEmpty { tocURLString = bookURL }
         guard let url = URL(string: tocURLString) else {
             throw BookSourceError.invalidURL
@@ -1030,9 +1038,89 @@ enum BookSourceEngine {
                 url: nextURL,
                 headers: scopedHeaders(source.headerJSON, target: nextURL, trustedSource: trustedURL)
             )
-            return parseChapters(body: body, base: nextURL, rules: rules)
+            return parseBuiltInTOC(body: body, base: nextURL)
+                ?? parseChapters(body: body, base: nextURL, rules: rules)
         }
-        return parseChapters(body: body, base: url, rules: rules)
+        return parseBuiltInTOC(body: body, base: url)
+            ?? parseChapters(body: body, base: url, rules: rules)
+    }
+
+    private static func parseBuiltInTOC(
+        body: String,
+        base: URL
+    ) -> [SourceChapterItem]? {
+        let host = base.host?.lowercased() ?? ""
+        let isQBTR = host == "www.qbtr.org" || host == "qbtr.org"
+        let isAlice = host == "www.alicesw.com" || host == "alicesw.com"
+        guard isQBTR || isAlice else { return nil }
+
+        if isAlice {
+            // Alice's full catalog is a separate page and its chapter URLs do not
+            // share the numeric id used by the book detail URL (some are hashed).
+            // Restrict scanning to .mulu_list, then preserve the site's order.
+            let listPattern = #"<ul\b[^>]*class=["'][^"']*\bmulu_list\b[^"']*["'][^>]*>([\s\S]*?)</ul>"#
+            guard let listRegex = try? NSRegularExpression(pattern: listPattern, options: [.caseInsensitive]),
+                  let listMatch = listRegex.firstMatch(in: body, options: [], range: NSRange(body.startIndex..., in: body)),
+                  let listRange = Range(listMatch.range(at: 1), in: body) else { return nil }
+            let listBody = String(body[listRange])
+            guard let linkRegex = try? NSRegularExpression(
+                pattern: #"<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)</a>"#,
+                options: [.caseInsensitive]
+            ) else { return nil }
+            var items: [SourceChapterItem] = []
+            var seen = Set<String>()
+            for match in linkRegex.matches(in: listBody, options: [], range: NSRange(listBody.startIndex..., in: listBody)) {
+                guard let urlRange = Range(match.range(at: 1), in: listBody),
+                      let titleRange = Range(match.range(at: 2), in: listBody) else { continue }
+                let resolved = RuleParser.resolveURL(String(listBody[urlRange]), base: base)
+                guard let parsed = URL(string: resolved),
+                      ["http", "https"].contains(parsed.scheme?.lowercased() ?? ""),
+                      seen.insert(parsed.absoluteString).inserted else { continue }
+                let title = RuleParser.stripTags(String(listBody[titleRange]))
+                items.append(SourceChapterItem(
+                    title: title.isEmpty ? "第\(items.count + 1)章" : title,
+                    url: parsed.absoluteString,
+                    index: items.count
+                ))
+                if items.count >= 5_000 { break }
+            }
+            return items.isEmpty ? nil : items
+        }
+
+        // QBTR chapter links are numbered but can be emitted in a non-numeric order
+        // by the server. Normalize by chapter number so every book starts at 1.
+        let path = base.path
+        guard let match = try? NSRegularExpression(
+            pattern: #"/(?:tongren|changgui|hot)/([0-9]+)\.html"#,
+            options: [.caseInsensitive]
+        ).firstMatch(in: path, options: [], range: NSRange(path.startIndex..., in: path)),
+        let range = Range(match.range(at: 1), in: path) else { return nil }
+        let bookIDPattern = NSRegularExpression.escapedPattern(for: String(path[range]))
+        let pattern = #"<a\b[^>]*href=["']((?:/)?(?:tongren|changgui|hot)/"#
+            + bookIDPattern
+            + #"/([0-9]+)\.html)["'][^>]*>([\s\S]*?)</a>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        var records: [(number: Int, title: String, url: String)] = []
+        var seen = Set<String>()
+        for item in regex.matches(in: body, options: [], range: NSRange(body.startIndex..., in: body)) {
+            guard let urlRange = Range(item.range(at: 1), in: body),
+                  let numberRange = Range(item.range(at: 2), in: body),
+                  let titleRange = Range(item.range(at: 3), in: body),
+                  let number = Int(body[numberRange]) else { continue }
+            let resolved = RuleParser.resolveURL(String(body[urlRange]), base: base)
+            guard let parsed = URL(string: resolved),
+                  ["http", "https"].contains(parsed.scheme?.lowercased() ?? ""),
+                  seen.insert(parsed.absoluteString).inserted else { continue }
+            let title = RuleParser.stripTags(String(body[titleRange]))
+            records.append((number, title.isEmpty ? "第\(number)章" : title, parsed.absoluteString))
+        }
+        guard !records.isEmpty else { return nil }
+        records.sort { lhs, rhs in lhs.number == rhs.number ? lhs.url < rhs.url : lhs.number < rhs.number }
+        return records.prefix(5_000).enumerated().map { index, item in
+            SourceChapterItem(title: item.title, url: item.url, index: index)
+        }
     }
 
     private static func parseChapters(body: String, base: URL, rules: ParseRule) -> [SourceChapterItem] {
@@ -1056,22 +1144,121 @@ enum BookSourceEngine {
                 baseURL: base,
                 limit: 5_000
             )
-            for i in 0..<min(urls.count, 5000) {
-                let title = i < names.count ? names[i] : "第\(i + 1)章"
-                var u = urls[i]
+            var seen = Set<String>()
+            for i in 0..<min(urls.count, 5_000) {
+                let title = i < names.count ? names[i] : "第\(items.count + 1)章"
+                var u = urls[i].trimmingCharacters(in: .whitespacesAndNewlines)
                 if !u.hasPrefix("http") { u = RuleParser.resolveURL(u, base: base) }
-                items.append(SourceChapterItem(title: title, url: u, index: i))
+                guard let parsed = URL(string: u),
+                      ["http", "https"].contains(parsed.scheme?.lowercased() ?? ""),
+                      seen.insert(parsed.absoluteString).inserted else { continue }
+                items.append(SourceChapterItem(title: title, url: parsed.absoluteString, index: items.count))
             }
             return items
         }
-        for (i, block) in blocks.prefix(5000).enumerated() {
-            let title = RuleParser.getString(from: block, rule: rules.chapterName, baseURL: base) ?? "第\(i + 1)章"
+        var seen = Set<String>()
+        for block in blocks.prefix(5_000) {
+            let title = RuleParser.getString(from: block, rule: rules.chapterName, baseURL: base)
+                ?? "第\(items.count + 1)章"
             var u = RuleParser.getString(from: block, rule: rules.chapterUrl, baseURL: base) ?? ""
-            if u.isEmpty { continue }
+            u = u.trimmingCharacters(in: .whitespacesAndNewlines)
             if !u.hasPrefix("http") { u = RuleParser.resolveURL(u, base: base) }
-            items.append(SourceChapterItem(title: title, url: u, index: i))
+            guard let parsed = URL(string: u),
+                  ["http", "https"].contains(parsed.scheme?.lowercased() ?? ""),
+                  seen.insert(parsed.absoluteString).inserted else { continue }
+            items.append(SourceChapterItem(title: title, url: parsed.absoluteString, index: items.count))
         }
         return items
+    }
+
+    private static func builtInBookID(from bookURL: String) -> String? {
+        guard let url = URL(string: bookURL) else { return nil }
+        let path = url.path
+        let patterns = [
+            "/(?:novel|book|id)/([0-9]+)\\.html$",
+            "/(?:novel|book)/([0-9]+)$"
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                  let match = regex.firstMatch(in: path, options: [], range: NSRange(path.startIndex..., in: path)),
+                  let range = Range(match.range(at: 1), in: path) else { continue }
+            return String(path[range])
+        }
+        return nil
+    }
+
+    private static func fetchCoverURL(
+        bookURL: String,
+        source: BookSourceSnapshot
+    ) async throws -> String? {
+        guard let url = URL(string: bookURL),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        let body = try await fetchString(
+            url: url,
+            headers: scopedHeaders(
+                source.headerJSON,
+                target: url,
+                trustedSource: trustedSourceURL(source: source, currentBookURL: bookURL)
+            )
+        )
+        if let value = RuleParser.getString(from: body, rule: source.rules.coverUrl, baseURL: url),
+           let resolved = validImageURL(value, base: url) {
+            return resolved
+        }
+        return extractCoverURL(from: body, base: url)
+    }
+
+    private static func extractCoverURL(from body: String, base: URL) -> String? {
+        let metaPattern = #"<meta\b[^>]*(?:property|name)\s*=\s*[\"'](?:og:image|twitter:image)[\"'][^>]*content\s*=\s*[\"']([^\"']+)[\"'][^>]*>"#
+        if let regex = try? NSRegularExpression(pattern: metaPattern, options: [.caseInsensitive]),
+           let match = regex.firstMatch(in: body, options: [], range: NSRange(body.startIndex..., in: body)),
+           let range = Range(match.range(at: 1), in: body),
+           let url = validImageURL(String(body[range]), base: base) {
+            return url
+        }
+        let imagePattern = #"<img\b([^>]*)>"#
+        guard let regex = try? NSRegularExpression(pattern: imagePattern, options: [.caseInsensitive]) else { return nil }
+        var fallback: String?
+        for match in regex.matches(in: body, options: [], range: NSRange(body.startIndex..., in: body)) {
+            let tag = (body as NSString).substring(with: match.range)
+            let preferred = tag.range(of: "cover|fengmian|book", options: [.regularExpression, .caseInsensitive]) != nil
+            for attribute in ["data-src", "data-original", "src"] {
+                let pattern = "\\b" + attribute + "\\s*=\\s*[\"']([^\"']+)[\"']"
+                guard let attrRegex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                      let attrMatch = attrRegex.firstMatch(in: tag, options: [], range: NSRange(tag.startIndex..., in: tag)),
+                      let range = Range(attrMatch.range(at: 1), in: tag),
+                      let url = validImageURL(String(tag[range]), base: base) else { continue }
+                if preferred { return url }
+                fallback = fallback ?? url
+            }
+        }
+        return fallback
+    }
+
+    private static func validImageURL(_ raw: String, base: URL) -> String? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty,
+              !value.lowercased().hasPrefix("data:"),
+              let url = URL(string: RuleParser.resolveURL(value, base: base)),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        return url.absoluteString
+    }
+
+    static func parseChaptersForTesting(
+        body: String,
+        base: URL,
+        rules: ParseRule
+    ) -> [SourceChapterItem] {
+        parseBuiltInTOC(body: body, base: base)
+            ?? parseChapters(body: body, base: base, rules: rules)
+    }
+
+    static func extractCoverURLForTesting(body: String, base: URL) -> String? {
+        extractCoverURL(from: body, base: base)
+    }
+
+    static func resolveCoverURL(bookURL: String, source: BookSourceSnapshot) async -> String? {
+        try? await fetchCoverURL(bookURL: bookURL, source: source)
     }
 
     // MARK: - Content

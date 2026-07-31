@@ -201,8 +201,19 @@ final class DiscoveryViewModel {
                 return
             }
 
-            let limited = Array(list.prefix(5000))
-            let coverData = await downloadCover(item.coverURL)
+            let limited = Array(list.prefix(5_000))
+            let coverURL: String?
+            if let existingCover = item.coverURL, !existingCover.isEmpty {
+                coverURL = existingCover
+            } else {
+                coverURL = await BookSourceEngine.resolveCoverURL(
+                    bookURL: item.bookURL,
+                    source: source
+                )
+            }
+            let downloadedCover = await downloadCover(coverURL)
+            let coverData = downloadedCover
+                ?? fallbackCoverData(title: item.name, author: item.author)
             let book = Book(
                 title: item.name.isEmpty ? String(localized: "未命名") : item.name,
                 author: item.author,
@@ -338,11 +349,81 @@ final class DiscoveryViewModel {
               ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
         var request = URLRequest(url: url, timeoutInterval: 15)
         request.setValue("image/*", forHTTPHeaderField: "Accept")
+        request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
+        request.setValue(
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 PureReader/1.1",
+            forHTTPHeaderField: "User-Agent"
+        )
         guard let (data, response) = try? await URLSession.shared.data(for: request) else { return nil }
         if let http = response as? HTTPURLResponse,
            !(200...299).contains(http.statusCode) { return nil }
         guard !data.isEmpty, data.count <= maxCoverBytes, UIImage(data: data) != nil else { return nil }
         return data
+    }
+
+    private func fallbackCoverData(title: String, author: String) -> Data? {
+        let size = CGSize(width: 600, height: 900)
+        let hash = title.unicodeScalars.reduce(UInt64(5_381)) {
+            (($0 << 5) &+ $0) &+ UInt64($1.value)
+        }
+        let colors = [
+            UIColor(red: 0.12 + CGFloat(hash % 25) / 100, green: 0.18, blue: 0.34, alpha: 1),
+            UIColor(red: 0.42, green: 0.16 + CGFloat((hash / 7) % 25) / 100, blue: 0.28, alpha: 1)
+        ]
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let image = renderer.image { context in
+            let cg = context.cgContext
+            let colorSpace = CGColorSpaceCreateDeviceRGB()
+            let gradient = CGGradient(
+                colorsSpace: colorSpace,
+                colors: colors.map(\.cgColor) as CFArray,
+                locations: [0, 1]
+            )
+            guard let gradient else { return }
+            cg.drawLinearGradient(
+                gradient,
+                start: CGPoint(x: 0, y: 0),
+                end: CGPoint(x: size.width, y: size.height),
+                options: []
+            )
+            let inset = CGRect(x: 54, y: 70, width: size.width - 108, height: size.height - 140)
+            cg.setStrokeColor(UIColor.white.withAlphaComponent(0.28).cgColor)
+            cg.setLineWidth(3)
+            cg.stroke(inset.insetBy(dx: 4, dy: 4))
+            let titleText = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "未命名" : title
+            let titleStyle = NSMutableParagraphStyle()
+            titleStyle.alignment = .center
+            titleStyle.lineBreakMode = .byWordWrapping
+            let titleAttributes: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 42, weight: .bold),
+                .foregroundColor: UIColor.white,
+                .paragraphStyle: titleStyle
+            ]
+            let titleRect = CGRect(x: 82, y: 250, width: size.width - 164, height: 260)
+            (titleText as NSString).draw(in: titleRect, withAttributes: titleAttributes)
+            if !author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let authorStyle = NSMutableParagraphStyle()
+                authorStyle.alignment = .center
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.systemFont(ofSize: 24, weight: .medium),
+                    .foregroundColor: UIColor.white.withAlphaComponent(0.8),
+                    .paragraphStyle: authorStyle
+                ]
+                (author as NSString).draw(
+                    in: CGRect(x: 82, y: 610, width: size.width - 164, height: 50),
+                    withAttributes: attrs
+                )
+            }
+            let markAttrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 18, weight: .semibold),
+                .foregroundColor: UIColor.white.withAlphaComponent(0.55)
+            ]
+            ("PureReader" as NSString).draw(
+                at: CGPoint(x: 82, y: 790),
+                withAttributes: markAttrs
+            )
+        }
+        return image.pngData()
     }
 
     private func resolveSource(

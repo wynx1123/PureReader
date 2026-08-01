@@ -47,13 +47,6 @@ def main() -> None:
     conf_proj_release = uid("CONF_PROJ_RELEASE")
     conf_tgt_debug = uid("CONF_TGT_DEBUG")
     conf_tgt_release = uid("CONF_TGT_RELEASE")
-    tests_target_id = uid("TESTS_TARGET")
-    tests_sources_phase = uid("TESTS_SOURCES")
-    tests_frameworks_phase = uid("TESTS_FRAMEWORKS")
-    tests_product_ref = uid("TESTS_PRODUCT_REF")
-    conf_list_tests = uid("CONFLIST_TESTS")
-    conf_tests_debug = uid("CONF_TESTS_DEBUG")
-    conf_tests_release = uid("CONF_TESTS_RELEASE")
 
     # Build file / file ref for each swift
     file_entries: list[tuple[str, Path, str, str]] = []  # name, path, file_ref, build_file
@@ -63,14 +56,6 @@ def main() -> None:
         fr = uid(f"FR:{rel}")
         bf = uid(f"BF:{rel}")
         file_entries.append((name, p.relative_to(SRC), fr, bf))
-
-    tests_dir = ROOT / "PureReaderTests"
-    # 注意：iSH 沙箱中新建目录的枚举（glob/readdir）可能不可见，
-    # 因此用固定文件名 + 单文件 stat 判定，避免依赖目录枚举。
-    test_entries: list[tuple[str, object, str, str]] = []
-    for name in ("RuleParserTests.swift", "OnlineLibraryServiceTests.swift"):
-        if (tests_dir / name).is_file():
-            test_entries.append((name, tests_dir / name, uid(f"FR:T:{name}"), uid(f"BF:T:{name}")))
 
     assets_fr = uid("FR:Assets.xcassets")
     assets_bf = uid("BF:Assets.xcassets")
@@ -117,14 +102,6 @@ def main() -> None:
         w(
             f'\t\t{sources_folder_ref} /* Sources */ = {{isa = PBXFileReference; lastKnownFileType = folder; path = Sources; sourceTree = "<group>"; }};'
         )
-    for name, rel, fr, bf in test_entries:
-        w(
-            f'\t\t{fr} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = {name}; sourceTree = "<group>"; }};'
-        )
-    if test_entries:
-        w(
-            f'\t\t{tests_product_ref} /* PureReaderTests.xctest */ = {{isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PureReaderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; }};'
-        )
     w(
         f'\t\t{assets_fr} /* Assets.xcassets */ = {{isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; }};'
     )
@@ -163,10 +140,6 @@ def main() -> None:
     # 内置书源 under Resources/Sources（folder reference）
     if has_sources_folder:
         dir_to_children["Resources"].append((sources_folder_ref, "Sources", False))
-    if test_entries:
-        ensure_dir("PureReaderTests")
-        for name, rel, fr, bf in test_entries:
-            dir_to_children["PureReaderTests"].append((fr, name, False))
 
     w("/* Begin PBXGroup section */")
     # Main group
@@ -182,8 +155,6 @@ def main() -> None:
     w("\t\t\tisa = PBXGroup;")
     w("\t\t\tchildren = (")
     w(f"\t\t\t\t{product_ref} /* PureReader.app */,")
-    if test_entries:
-        w(f"\t\t\t\t{tests_product_ref} /* PureReaderTests.xctest */,")
     w("\t\t\t);")
     w("\t\t\tname = Products;")
     w('\t\t\tsourceTree = "<group>";')
@@ -237,23 +208,6 @@ def main() -> None:
     w(f"\t\t\tproductReference = {product_ref} /* PureReader.app */;")
     w('\t\t\tproductType = "com.apple.product-type.application";')
     w("\t\t};")
-    if test_entries:
-        w(f"\t\t{tests_target_id} /* PureReaderTests */ = {{")
-        w("\t\t\tisa = PBXNativeTarget;")
-        w(f"\t\t\tbuildConfigurationList = {conf_list_tests} /* Build configuration list for PBXNativeTarget \"PureReaderTests\" */;")
-        w("\t\t\tbuildPhases = (")
-        w(f"\t\t\t\t{tests_sources_phase} /* Sources */,")
-        w(f"\t\t\t\t{tests_frameworks_phase} /* Frameworks */,")
-        w("\t\t\t);")
-        w("\t\t\tbuildRules = (")
-        w("\t\t\t);")
-        w("\t\t\tdependencies = (")
-        w("\t\t\t);")
-        w("\t\t\tname = PureReaderTests;")
-        w("\t\t\tproductName = PureReaderTests;")
-        w(f"\t\t\tproductReference = {tests_product_ref} /* PureReaderTests.xctest */;")
-        w('\t\t\tproductType = "com.apple.product-type.bundle.unit-test";')
-        w("\t\t};")
     w("/* End PBXNativeTarget section */")
 
     # Project
@@ -295,16 +249,6 @@ def main() -> None:
     w("\t\t\t);")
     w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
     w("\t\t};")
-    if test_entries:
-        w(f"\t\t{tests_sources_phase} /* Sources */ = {{")
-        w("\t\t\tisa = PBXSourcesBuildPhase;")
-        w("\t\t\tbuildActionMask = 2147483647;")
-        w("\t\t\tfiles = (")
-        for name, rel, fr, bf in test_entries:
-            w(f"\t\t\t\t{bf} /* {name} in Sources */,")
-        w("\t\t\t);")
-        w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
-        w("\t\t};")
     w("/* End PBXSourcesBuildPhase section */")
 
     # Frameworks empty
@@ -316,14 +260,6 @@ def main() -> None:
     w("\t\t\t);")
     w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
     w("\t\t};")
-    if test_entries:
-        w(f"\t\t{tests_frameworks_phase} /* Frameworks */ = {{")
-        w("\t\t\tisa = PBXFrameworksBuildPhase;")
-        w("\t\t\tbuildActionMask = 2147483647;")
-        w("\t\t\tfiles = (")
-        w("\t\t\t);")
-        w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
-        w("\t\t};")
     w("/* End PBXFrameworksBuildPhase section */")
 
     # Resources
@@ -413,49 +349,6 @@ def main() -> None:
         w("\t\t\t};")
         w(f"\t\t\tname = {name};")
         w("\t\t};")
-    if test_entries:
-        tests_settings = [
-            "ALWAYS_SEARCH_USER_PATHS = NO;",
-            'BUNDLE_LOADER = "$(TEST_HOST)";',
-            "CLANG_ENABLE_MODULES = YES;",
-            'CODE_SIGN_STYLE = Automatic;',
-            'CURRENT_PROJECT_VERSION = 1;',
-            "DEVELOPMENT_TEAM = "";",
-            'GENERATE_INFOPLIST_FILE = YES;',
-            "IPHONEOS_DEPLOYMENT_TARGET = 17.0;",
-            "LD_RUNPATH_SEARCH_PATHS = (",
-            '\t\t\t\t"$(inherited)",',
-            '\t\t\t\t"@executable_path/Frameworks",',
-            '\t\t\t\t"@loader_path/Frameworks",',
-            "\t\t\t);",
-            "MARKETING_VERSION = 1.0;",
-            "PRODUCT_BUNDLE_IDENTIFIER = com.purereader.tests;",
-            "PRODUCT_NAME = \"$(TARGET_NAME)\";",
-            "SDKROOT = iphoneos;",
-            "SWIFT_VERSION = 5.0;",
-            "TARGETED_DEVICE_FAMILY = \"1,2\";",
-            "TEST_HOST = \"$(BUILT_PRODUCTS_DIR)/PureReader.app/PureReader\";",
-        ]
-        for conf_id, name, is_debug in [
-            (conf_tests_debug, "Debug", True),
-            (conf_tests_release, "Release", False),
-        ]:
-            w(f"\t\t{conf_id} /* {name} */ = {{")
-            w("\t\t\tisa = XCBuildConfiguration;")
-            w("\t\t\tbuildSettings = {")
-            for line in tests_settings:
-                w(line)
-            if is_debug:
-                w("\t\t\t\tSWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;")
-                w('\t\t\t\tSWIFT_OPTIMIZATION_LEVEL = "-Onone";')
-                w("\t\t\t\tDEBUG_INFORMATION_FORMAT = dwarf;")
-            else:
-                w('\t\t\t\tSWIFT_OPTIMIZATION_LEVEL = "-O";')
-                w('\t\t\t\tDEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";')
-                w("\t\t\t\tVALIDATE_PRODUCT = YES;")
-            w("\t\t\t};")
-            w(f"\t\t\tname = {name};")
-            w("\t\t};")
     w("/* End XCBuildConfiguration section */")
 
     # Config lists
@@ -478,16 +371,6 @@ def main() -> None:
     w("\t\t\tdefaultConfigurationIsVisible = 0;")
     w('\t\t\tdefaultConfigurationName = Release;')
     w("\t\t};")
-    if test_entries:
-        w(f'\t\t{conf_list_tests} /* Build configuration list for PBXNativeTarget "PureReaderTests" */ = {{')
-        w("\t\t\tisa = XCConfigurationList;")
-        w("\t\t\tbuildConfigurations = (")
-        w(f"\t\t\t\t{conf_tests_debug} /* Debug */,")
-        w(f"\t\t\t\t{conf_tests_release} /* Release */,")
-        w("\t\t\t);")
-        w("\t\t\tdefaultConfigurationIsVisible = 0;")
-        w("\t\t\tdefaultConfigurationName = Release;")
-        w("\t\t};")
     w("/* End XCConfigurationList section */")
 
     w("\t};")

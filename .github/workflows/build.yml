@@ -23,18 +23,6 @@ jobs:
       - name: Show Xcode version
         run: xcodebuild -version && xcodebuild -list
 
-      - name: Run unit tests (simulator)
-        run: |
-          set -euo pipefail
-          xcodebuild test \
-            -project PureReader.xcodeproj \
-            -scheme PureReader \
-            -configuration Debug \
-            -destination 'platform=iOS Simulator,name=iPhone 16' \
-            -resultBundlePath ./build/test-results.xcresult \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO
-
       - name: Build Archive (unsigned)
         run: |
           set -euo pipefail

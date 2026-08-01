@@ -3,12 +3,14 @@ name: Build IPA
 on:
   push:
     branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-14
-    timeout-minutes: 30
+    runs-on: macos-15
+    timeout-minutes: 40
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,6 +22,18 @@ jobs:
 
       - name: Show Xcode version
         run: xcodebuild -version && xcodebuild -list
+
+      - name: Run unit tests (simulator)
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -project PureReader.xcodeproj \
+            -scheme PureReader \
+            -configuration Debug \
+            -destination 'platform=iOS Simulator,name=iPhone 16' \
+            -resultBundlePath ./build/test-results.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO
 
       - name: Build Archive (unsigned)
         run: |

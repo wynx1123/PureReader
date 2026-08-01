@@ -14,7 +14,12 @@ struct BookDetailSheet: View {
     let onDelete: () -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.modelContext) private var modelContext
     @State private var showDeleteConfirm = false
+    /// 整本缓存进度（nil = 未在缓存）
+    @State private var cacheProgress: (done: Int, total: Int)?
+    @State private var cacheTask: Task<Void, Never>?
+    @State private var cacheResultMessage: String?
 
     init(
         book: Book,
@@ -212,6 +217,10 @@ struct BookDetailSheet: View {
             .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
             .listRowBackground(Color.clear)
 
+            if ChapterCacheService.isCacheable(book) {
+                cacheButton
+            }
+
             Button {
                 dismiss()
                 onEdit()
@@ -234,6 +243,79 @@ struct BookDetailSheet: View {
             } label: {
                 Label(String(localized: "删除书籍"), systemImage: "trash")
                     .frame(minHeight: PRTheme.touch)
+            }
+        }
+    }
+
+    // MARK: - 整本缓存
+
+    private var cacheButton: some View {
+        let total = (book.chapters ?? []).count
+        let cached = ChapterCacheService.cachedCount(book)
+        return Group {
+            if let progress = cacheProgress {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Text(String(localized: "正在缓存正文…"))
+                            .font(.subheadline)
+                        Spacer()
+                        Text("\(progress.done)/\(progress.total)")
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                    ProgressView(value: Double(progress.done), total: Double(max(progress.total, 1)))
+                    Button(String(localized: "取消缓存"), role: .destructive) {
+                        cacheTask?.cancel()
+                        cacheTask = nil
+                        cacheProgress = nil
+                    }
+                    .font(.subheadline)
+                }
+                .frame(minHeight: PRTheme.touch)
+            } else {
+                Button {
+                    startCache()
+                } label: {
+                    Label(
+                        cached >= total && total > 0
+                            ? String(localized: "已缓存全部章节（\(cached)/\(total)）")
+                            : String(localized: "缓存全书（已缓存 \(cached)/\(total)）"),
+                        systemImage: "arrow.down.circle"
+                    )
+                    .frame(minHeight: PRTheme.touch)
+                }
+                .disabled(cached >= total && total > 0)
+            }
+        }
+        .alert(String(localized: "缓存完成"), isPresented: Binding(
+            get: { cacheResultMessage != nil },
+            set: { if !$0 { cacheResultMessage = nil } }
+        )) {
+            Button(String(localized: "好"), role: .cancel) {}
+        } message: {
+            Text(cacheResultMessage ?? "")
+        }
+    }
+
+    private func startCache() {
+        cacheResultMessage = nil
+        let total = (book.chapters ?? []).count
+        cacheProgress = (ChapterCacheService.cachedCount(book), total)
+        cacheTask = Task { @MainActor in
+            let outcome = await ChapterCacheService.cacheAllChapters(
+                of: book,
+                context: modelContext,
+                progress: { done, total in
+                    cacheProgress = (done, total)
+                },
+                shouldCancel: { Task.isCancelled }
+            )
+            cacheTask = nil
+            cacheProgress = nil
+            if outcome.failed > 0 {
+                cacheResultMessage = String(localized: "成功 \(outcome.cached) 章，失败 \(outcome.failed) 章。失败章节可在阅读时重新加载。")
+            } else {
+                cacheResultMessage = String(localized: "全部 \(outcome.cached + outcome.skipped) 章已可离线阅读。")
             }
         }
     }

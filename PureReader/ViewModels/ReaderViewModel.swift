@@ -67,6 +67,7 @@ final class ReaderViewModel {
     private var verticalPaginationTasks: [Int: Task<Void, Never>] = [:]
     private var verticalPageCache: [Int: [ReaderPage]] = [:]
     private var verticalSnapshots: [Int: ChapterPaginationSnapshot] = [:]
+    private var prefetchingChapterIDs = Set<UUID>()
     private var verticalLayout: TextPaginator.Layout?
     private var verticalGenerationID = UUID()
     private var saveTask: Task<Void, Never>?
@@ -401,6 +402,47 @@ final class ReaderViewModel {
         let generation = verticalGenerationID
         paginateVerticalChapter(index + 1, generation: generation, priority: .userInitiated)
         paginateVerticalChapter(index - 1, generation: generation)
+        // 在线书：相邻章节正文为空时后台预抓，翻到即读
+        prefetchOnlineChapterContent(at: index + 1)
+        prefetchOnlineChapterContent(at: index - 1)
+    }
+
+    /// 相邻在线章节正文预抓：空内容 + 有 sourceURL 才抓，成功后存库并重建该章分页。
+    /// 失败静默（用户翻到时会走 loadCurrentChapterContentIfNeeded 的正常加载与报错）。
+    private func prefetchOnlineChapterContent(at index: Int) {
+        guard chapters.indices.contains(index) else { return }
+        let chapter = chapters[index]
+        guard let url = chapter.sourceURL, !url.isEmpty,
+              chapter.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !prefetchingChapterIDs.contains(chapter.id),
+              let source = resolveOnlineSource() else { return }
+        prefetchingChapterIDs.insert(chapter.id)
+        let chapterID = chapter.id
+        let snapshot = BookSourceSnapshot(source)
+        let generation = verticalGenerationID
+        Task { [weak self] in
+            guard let self else { return }
+            defer { self.prefetchingChapterIDs.remove(chapterID) }
+            guard let text = try? await BookSourceEngine.fetchContent(chapterURL: url, source: snapshot),
+                  !Task.isCancelled else { return }
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty,
+                  let target = self.chapters.first(where: { $0.id == chapterID }) else { return }
+            target.content = trimmed
+            try? self.context.save()
+            // 垂直滚动模式：快照是值拷贝，需同步新文本并重排该章
+            if let old = self.verticalSnapshots[index], old.text.isEmpty {
+                self.verticalSnapshots[index] = ChapterPaginationSnapshot(
+                    index: old.index,
+                    title: old.title,
+                    id: old.id,
+                    text: trimmed,
+                    richContentData: old.richContentData
+                )
+                self.verticalPageCache[index] = nil
+                self.paginateVerticalChapter(index, generation: generation)
+            }
+        }
     }
 
     func preloadVerticalPages(around id: BookPageID) {
@@ -464,6 +506,11 @@ final class ReaderViewModel {
                 try? context.save()
                 if currentChapter?.id == chapterID {
                     repaginate(restoreOffset: restoreOffset ?? 0)
+                }
+                // 当前章就绪后，顺手预抓相邻在线章节（垂直模式的分页回调里也会触发，幂等去重）
+                if let idx = chapters.firstIndex(where: { $0.id == chapterID }) {
+                    prefetchOnlineChapterContent(at: idx + 1)
+                    prefetchOnlineChapterContent(at: idx - 1)
                 }
             } catch is CancellationError {
                 return

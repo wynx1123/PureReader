@@ -27,6 +27,8 @@ final class DiscoveryViewModel {
     /// 搜索/发现结果缺封面时，从详情页懒加载的封面缓存（bookURL → coverURL，空串=已确认无封面）
     var coverOverrides: [String: String] = [:]
     private var coverPrefetching = Set<String>()
+    /// 发现页分类结果内存缓存（categoryID → results），切书源/分类即取不重复拉取
+    private var categoryResultsCache: [String: [SourceSearchResult]] = [:]
     var isSearching = false
     var isLoadingDiscovery = false
     var errorMessage: String?
@@ -100,7 +102,7 @@ final class DiscoveryViewModel {
         if !visibleCategories.contains(where: { $0.id == selectedCategoryID }) {
             selectedCategoryID = visibleCategories.first?.id ?? ""
         }
-        loadSelectedCategory(snapshots: snapshots)
+        loadSelectedCategory(snapshots: snapshots, forceRefresh: force)
     }
 
     /// 切换发现页书源（分类按书源分组；自动选中该源第一个分类并加载）
@@ -119,14 +121,52 @@ final class DiscoveryViewModel {
         loadSelectedCategory(snapshots: prepareSources(sources))
     }
 
-    private func loadSelectedCategory(snapshots: [BookSourceSnapshot]) {
+    /// 刷新当前分类（下拉刷新：绕过缓存强制拉网络）
+    func refreshCurrentCategory(sources: [BookSource]) {
+        loadSelectedCategory(snapshots: prepareSources(sources), forceRefresh: true)
+    }
+
+    /// 加载当前分类结果，三级缓存策略（stale-while-revalidate）：
+    /// 1. 内存命中 → 直接展示，不拉网络；
+    /// 2. 磁盘命中 → 立即展示，数据不新鲜则后台静默刷新；
+    /// 3. 均无 / forceRefresh → 拉网络，成功后写内存+磁盘。
+    private func loadSelectedCategory(snapshots: [BookSourceSnapshot], forceRefresh: Bool = false) {
         guard let category = selectedCategory else { return }
         discoveryTask?.cancel()
-        isLoadingDiscovery = true
         errorMessage = nil
         statusMessage = nil
+
+        if !forceRefresh {
+            if let cached = categoryResultsCache[category.id], !cached.isEmpty {
+                discoveryResults = cached
+                return
+            }
+            if let disk = DiscoveryResultCache.load(categoryID: category.id) {
+                discoveryResults = disk.results
+                categoryResultsCache[category.id] = disk.results
+                // 数据仍新鲜：直接用，不打扰网络
+                if Date().timeIntervalSince(disk.savedAt) < DiscoveryResultCache.freshInterval {
+                    return
+                }
+                // 数据过期：先展示旧内容，后台静默刷新
+                refreshCategoryFromNetwork(category: category, snapshots: snapshots, showsLoading: false)
+                return
+            }
+        }
+
+        discoveryResults = []
+        refreshCategoryFromNetwork(category: category, snapshots: snapshots, showsLoading: true)
+    }
+
+    private func refreshCategoryFromNetwork(
+        category: DiscoveryCategoryOption,
+        snapshots: [BookSourceSnapshot],
+        showsLoading: Bool
+    ) {
+        discoveryTask?.cancel()
+        if showsLoading { isLoadingDiscovery = true }
         discoveryTask = Task {
-            defer { isLoadingDiscovery = false }
+            defer { if showsLoading { isLoadingDiscovery = false } }
             let report: BookSourceSearchReport
             if !category.entries.isEmpty {
                 report = await BookSourceEngine.discover(
@@ -140,8 +180,17 @@ final class DiscoveryViewModel {
                 )
             }
             guard !Task.isCancelled else { return }
+            // 静默刷新期间用户可能已切走分类，只在仍是当前分类时落地
+            guard selectedCategoryID == category.id else { return }
             discoveryResults = report.results
-            handle(report: report, emptyMessage: String(localized: "当前分类暂未拉取到书籍，可以切换分类或检查书源。"))
+            if !report.results.isEmpty {
+                categoryResultsCache[category.id] = report.results
+                DiscoveryResultCache.save(categoryID: category.id, results: report.results)
+            }
+            // 静默刷新失败不弹错（已有旧内容可看），仅展示态才报错
+            if showsLoading {
+                handle(report: report, emptyMessage: String(localized: "当前分类暂未拉取到书籍，可以切换分类或检查书源。"))
+            }
         }
     }
 

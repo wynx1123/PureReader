@@ -159,7 +159,7 @@ final class BookSource {
 }
 
 /// 搜索结果条目（非持久）
-struct SourceSearchResult: Identifiable, Hashable, Sendable {
+struct SourceSearchResult: Identifiable, Hashable, Sendable, Codable {
     let id = UUID()
     var name: String
     var author: String

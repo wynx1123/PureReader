@@ -172,7 +172,8 @@ struct DiscoveryView: View {
             .padding(.vertical, 12)
         }
         .refreshable {
-            viewModel.loadDiscovery(sources: sources, force: true)
+            // 只强制刷新当前分类（绕过缓存），不重建分类结构
+            viewModel.refreshCurrentCategory(sources: sources)
         }
     }
 

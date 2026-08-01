@@ -23,7 +23,7 @@ enum DiscoveryResultCache {
         // categoryID 含 UUID/中文，统一哈希成安全文件名
         var hash: UInt64 = 5381
         for byte in categoryID.utf8 {
-            hash = (hash &* 33) &^ UInt64(byte)
+            hash = (hash &* 33) ^ UInt64(byte)
         }
         return base.appendingPathComponent("\(hash).json")
     }

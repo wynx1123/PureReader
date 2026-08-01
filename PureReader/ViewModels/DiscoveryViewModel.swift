@@ -195,9 +195,10 @@ final class DiscoveryViewModel {
                 return
             }
 
+            let existingURL: String? = item.bookURL
             let existing = try? context.fetch(
                 FetchDescriptor<Book>(
-                    predicate: #Predicate<Book> { $0.sourceURL == item.bookURL }
+                    predicate: #Predicate<Book> { $0.sourceURL == existingURL }
                 )
             )
             if let existing, !existing.isEmpty {

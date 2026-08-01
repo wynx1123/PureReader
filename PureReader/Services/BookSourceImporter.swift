@@ -319,6 +319,7 @@ enum BookSourceImporter {
 
     /// 内置书源：首次启动时从 Bundle 的 Sources 目录导入纯 JSON 书源。
     /// 全部为 PureReader 原生格式（无 JavaScript 依赖），开箱即用。
+    @MainActor
     static func seedBuiltInIfNeeded(context: ModelContext) {
         let descriptor = FetchDescriptor<BookSource>()
         let existing = (try? context.fetch(descriptor)) ?? []

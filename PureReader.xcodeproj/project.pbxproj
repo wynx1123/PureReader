@@ -60,6 +60,7 @@
 		204C3C1CB728A6B9A25692A3 /* alicesw.json in Resources */ = {isa = PBXBuildFile; fileRef = 47F6E0832CAF4CEA3769478E /* alicesw.json */; };
 		4B6931FAC142EF87E8D88681 /* linpx.json in Resources */ = {isa = PBXBuildFile; fileRef = 26C5DA697D62ACBAE8DD700A /* linpx.json */; };
 		B09C9021AEBDCAC0B51A8B68 /* pixiv.json in Resources */ = {isa = PBXBuildFile; fileRef = 5C0254D3C03F905B31D0D58D /* pixiv.json */; };
+		D20C2360625349FB3E36A4B8 /* qbtr.json in Resources */ = {isa = PBXBuildFile; fileRef = 9413188DCC28A441F5EEEF62 /* qbtr.json */; };
 		D95C2E0E44ACA4D25BC59246 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4BBB33E2E51FAD6570CF4B94 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 /* Begin PBXFileReference section */
@@ -119,6 +120,7 @@
 		47F6E0832CAF4CEA3769478E /* alicesw.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = alicesw.json; sourceTree = "<group>"; };
 		26C5DA697D62ACBAE8DD700A /* linpx.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = linpx.json; sourceTree = "<group>"; };
 		5C0254D3C03F905B31D0D58D /* pixiv.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = pixiv.json; sourceTree = "<group>"; };
+		9413188DCC28A441F5EEEF62 /* qbtr.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = qbtr.json; sourceTree = "<group>"; };
 		4BBB33E2E51FAD6570CF4B94 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 /* Begin PBXGroup section */
@@ -195,6 +197,7 @@
 				47F6E0832CAF4CEA3769478E /* alicesw.json */,
 				26C5DA697D62ACBAE8DD700A /* linpx.json */,
 				5C0254D3C03F905B31D0D58D /* pixiv.json */,
+				9413188DCC28A441F5EEEF62 /* qbtr.json */,
 			);
 			path = Sources;
 			sourceTree = "<group>";
@@ -445,6 +448,7 @@
 				204C3C1CB728A6B9A25692A3 /* alicesw.json in Resources */,
 				4B6931FAC142EF87E8D88681 /* linpx.json in Resources */,
 				B09C9021AEBDCAC0B51A8B68 /* pixiv.json in Resources */,
+				D20C2360625349FB3E36A4B8 /* qbtr.json in Resources */,
 				D95C2E0E44ACA4D25BC59246 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

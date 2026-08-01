@@ -413,6 +413,16 @@ def verify_alicesw():
         if cond: ok += 1; print(f"✅ {label} {extra}")
         else: print(f"❌ {label} {extra}")
 
+    # 发现页（同人分类，ruleExplore）
+    disc = fetch(f"{A}/lists/73.html", ALICE_UA)
+    disc_blocks = match_elements(disc, "ul.txt-list li")
+    check("爱丽丝 发现页", len(disc_blocks) > 0, f"{len(disc_blocks)} 条")
+    if disc_blocks:
+        dname = parse_field(disc_blocks[0], r"span.s2 a@text##^\[[^\]]*\]\s*##", A)
+        durl = parse_field(disc_blocks[0], "span.s2 a@href", A)
+        check("爱丽丝 发现书名去前缀", bool(dname) and not dname.startswith("["), f"「{dname[:20]}」")
+        check("爱丽丝 发现URL", bool(durl) and "/novel/" in durl, durl or "")
+
     # 搜索
     body = fetch(f"{A}/search.html?q=%E5%9C%B0%E9%93%81", ALICE_UA)
     blocks = css_blocks(body, "div.list-group-item")

@@ -30,6 +30,12 @@
     },
     "ruleContent": {
       "content": "div.content_txt@text"
+    },
+    "ruleExplore": {
+      "bookList": "ul.txt-list li",
+      "name": "span.s2 a@text##^\\[[^\\]]*\\]\\s*##",
+      "author": "span.s5@text",
+      "bookUrl": "span.s2 a@href"
     }
   }
 ]

@@ -430,11 +430,11 @@ def main() -> None:
             "\t\t\t);",
             "MARKETING_VERSION = 1.0;",
             "PRODUCT_BUNDLE_IDENTIFIER = com.purereader.tests;",
-            "PRODUCT_NAME = '$(TARGET_NAME)';",
+            "PRODUCT_NAME = \"$(TARGET_NAME)\";",
             "SDKROOT = iphoneos;",
             "SWIFT_VERSION = 5.0;",
-            "TARGETED_DEVICE_FAMILY = '1,2';",
-            "TEST_HOST = '$(BUILT_PRODUCTS_DIR)/PureReader.app/PureReader';",
+            "TARGETED_DEVICE_FAMILY = \"1,2\";",
+            "TEST_HOST = \"$(BUILT_PRODUCTS_DIR)/PureReader.app/PureReader\";",
         ]
         for conf_id, name, is_debug in [
             (conf_tests_debug, "Debug", True),

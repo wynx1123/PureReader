@@ -63,11 +63,11 @@ def main() -> None:
     # 内置书源 JSON（Resources/Sources/*.json）作为资源打进 App Bundle，
     # 首次启动时由 BookSourceImporter.seedBuiltInIfNeeded 导入。
     sources_dir = SRC / "Resources" / "Sources"
-    source_json_files = sorted(sources_dir.glob("*.json")) if sources_dir.is_dir() else []
-    source_entries = [
-        (p.name, p.relative_to(SRC / "Resources"), uid(f"FR:SRC:{p.name}"), uid(f"BF:SRC:{p.name}"))
-        for p in source_json_files
-    ]
+    # 以 folder reference 打包：Bundle 内保留 Sources/ 目录结构，
+    # BookSourceImporter.seedBuiltInIfNeeded 用 Bundle.main.url(forResource: "Sources") 定位。
+    sources_folder_ref = uid("FR:SRC:DIR")
+    sources_folder_bf = uid("BF:SRC:DIR")
+    has_sources_folder = sources_dir.is_dir() and any(sources_dir.glob("*.json"))
 
     lines: list[str] = []
     w = lines.append
@@ -83,8 +83,8 @@ def main() -> None:
     w("/* Begin PBXBuildFile section */")
     for name, rel, fr, bf in file_entries:
         w(f"\t\t{bf} /* {name} in Sources */ = {{isa = PBXBuildFile; fileRef = {fr} /* {name} */; }};")
-    for name, rel, fr, bf in source_entries:
-        w(f"\t\t{bf} /* {name} in Resources */ = {{isa = PBXBuildFile; fileRef = {fr} /* {name} */; }};")
+    if has_sources_folder:
+        w(f"\t\t{sources_folder_bf} /* Sources in Resources */ = {{isa = PBXBuildFile; fileRef = {sources_folder_ref} /* Sources */; }};")
     w(f"\t\t{assets_bf} /* Assets.xcassets in Resources */ = {{isa = PBXBuildFile; fileRef = {assets_fr} /* Assets.xcassets */; }};")
     w("/* End PBXBuildFile section */")
 
@@ -98,9 +98,9 @@ def main() -> None:
         w(
             f'\t\t{fr} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = {quoted}; sourceTree = "<group>"; }};'
         )
-    for name, rel, fr, bf in source_entries:
+    if has_sources_folder:
         w(
-            f'\t\t{fr} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = text.json; path = {name}; sourceTree = "<group>"; }};'
+            f'\t\t{sources_folder_ref} /* Sources */ = {{isa = PBXFileReference; lastKnownFileType = folder; path = Sources; sourceTree = "<group>"; }};'
         )
     w(
         f'\t\t{assets_fr} /* Assets.xcassets */ = {{isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; }};'
@@ -137,11 +137,9 @@ def main() -> None:
     # Assets under Resources
     ensure_dir("Resources")
     dir_to_children["Resources"].append((assets_fr, "Assets.xcassets", False))
-    # 内置书源 under Resources/Sources
-    if source_entries:
-        ensure_dir("Resources/Sources")
-        for name, rel, fr, bf in source_entries:
-            dir_to_children["Resources/Sources"].append((fr, name, False))
+    # 内置书源 under Resources/Sources（folder reference）
+    if has_sources_folder:
+        dir_to_children["Resources"].append((sources_folder_ref, "Sources", False))
 
     w("/* Begin PBXGroup section */")
     # Main group
@@ -270,8 +268,8 @@ def main() -> None:
     w("\t\t\tisa = PBXResourcesBuildPhase;")
     w("\t\t\tbuildActionMask = 2147483647;")
     w("\t\t\tfiles = (")
-    for name, rel, fr, bf in source_entries:
-        w(f"\t\t\t\t{bf} /* {name} in Resources */,")
+    if has_sources_folder:
+        w(f"\t\t\t\t{sources_folder_bf} /* Sources in Resources */,")
     w(f"\t\t\t\t{assets_bf} /* Assets.xcassets in Resources */,")
     w("\t\t\t);")
     w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")

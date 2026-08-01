@@ -935,7 +935,9 @@ enum BookSourceEngine {
         encoding: String.Encoding
     ) -> String {
         guard let data = value.data(using: encoding) else { return value }
-        let unreserved = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._*%".utf8)
+        // RFC 1866 application/x-www-form-urlencoded unreserved：字母数字 + * - . _
+        // 注意不能包含 %：否则关键词里已转义的序列会原样透传，服务端解码出错
+        let unreserved = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._*".utf8)
         return data.map { byte in
             if unreserved.contains(byte) { return String(UnicodeScalar(byte)) }
             if byte == 0x20 { return "+" }

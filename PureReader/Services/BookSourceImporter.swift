@@ -1,8 +1,10 @@
 import Foundation
 import SwiftData
+import OSLog
 
 /// 多格式书源导入：Legado / 爱阅记 / PureReader JSON
 enum BookSourceImporter {
+    private static let logger = Logger(subsystem: "com.purereader.sources", category: "Importer")
     private static let maxDownloadBytes = 10 * 1024 * 1024
 
     struct ImportResult: Sendable {
@@ -330,10 +332,19 @@ enum BookSourceImporter {
             )) ?? []
             for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
             where file.pathExtension.lowercased() == "json" {
-                guard let data = try? Data(contentsOf: file),
-                      let result = try? importJSON(data, into: context) else { continue }
-                importedCount += result.changed
+                guard let data = try? Data(contentsOf: file) else {
+                    logger.warning("内置书源读取失败: \(file.lastPathComponent)")
+                    continue
+                }
+                do {
+                    let result = try importJSON(data, into: context)
+                    importedCount += result.changed
+                } catch {
+                    logger.warning("内置书源解析失败 \(file.lastPathComponent): \(error.localizedDescription)")
+                }
             }
+        } else {
+            logger.warning("Bundle 内未找到 Sources 目录，内置书源未导入")
         }
 
         if importedCount == 0 {

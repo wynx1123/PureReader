@@ -60,6 +60,15 @@ def main() -> None:
     assets_fr = uid("FR:Assets.xcassets")
     assets_bf = uid("BF:Assets.xcassets")
 
+    # 内置书源 JSON（Resources/Sources/*.json）作为资源打进 App Bundle，
+    # 首次启动时由 BookSourceImporter.seedBuiltInIfNeeded 导入。
+    sources_dir = SRC / "Resources" / "Sources"
+    source_json_files = sorted(sources_dir.glob("*.json")) if sources_dir.is_dir() else []
+    source_entries = [
+        (p.name, p.relative_to(SRC / "Resources"), uid(f"FR:SRC:{p.name}"), uid(f"BF:SRC:{p.name}"))
+        for p in source_json_files
+    ]
+
     lines: list[str] = []
     w = lines.append
 
@@ -74,6 +83,8 @@ def main() -> None:
     w("/* Begin PBXBuildFile section */")
     for name, rel, fr, bf in file_entries:
         w(f"\t\t{bf} /* {name} in Sources */ = {{isa = PBXBuildFile; fileRef = {fr} /* {name} */; }};")
+    for name, rel, fr, bf in source_entries:
+        w(f"\t\t{bf} /* {name} in Resources */ = {{isa = PBXBuildFile; fileRef = {fr} /* {name} */; }};")
     w(f"\t\t{assets_bf} /* Assets.xcassets in Resources */ = {{isa = PBXBuildFile; fileRef = {assets_fr} /* Assets.xcassets */; }};")
     w("/* End PBXBuildFile section */")
 
@@ -86,6 +97,10 @@ def main() -> None:
         quoted = name if all(c.isalnum() or c in "._-" for c in name) else f'"{name}"'
         w(
             f'\t\t{fr} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = {quoted}; sourceTree = "<group>"; }};'
+        )
+    for name, rel, fr, bf in source_entries:
+        w(
+            f'\t\t{fr} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = text.json; path = {name}; sourceTree = "<group>"; }};'
         )
     w(
         f'\t\t{assets_fr} /* Assets.xcassets */ = {{isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; }};'
@@ -122,6 +137,11 @@ def main() -> None:
     # Assets under Resources
     ensure_dir("Resources")
     dir_to_children["Resources"].append((assets_fr, "Assets.xcassets", False))
+    # 内置书源 under Resources/Sources
+    if source_entries:
+        ensure_dir("Resources/Sources")
+        for name, rel, fr, bf in source_entries:
+            dir_to_children["Resources/Sources"].append((fr, name, False))
 
     w("/* Begin PBXGroup section */")
     # Main group
@@ -250,6 +270,8 @@ def main() -> None:
     w("\t\t\tisa = PBXResourcesBuildPhase;")
     w("\t\t\tbuildActionMask = 2147483647;")
     w("\t\t\tfiles = (")
+    for name, rel, fr, bf in source_entries:
+        w(f"\t\t\t\t{bf} /* {name} in Resources */,")
     w(f"\t\t\t\t{assets_bf} /* Assets.xcassets in Resources */,")
     w("\t\t\t);")
     w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")

@@ -746,7 +746,7 @@ enum BookSourceEngine {
         )
     }
 
-    private static func parseHeaders(_ value: Any?) -> [String: String] {
+    static func parseHeaders(_ value: Any?) -> [String: String] {
         if let headers = value as? [String: Any] {
             return sanitizeHeaders(headers)
         }

@@ -315,42 +315,58 @@ enum BookSourceImporter {
         return try JSONSerialization.data(withJSONObject: payloads, options: [.prettyPrinted, .sortedKeys])
     }
 
-    /// 内置示例书源（演示规则结构；站点可用性不保证）
+    /// 内置书源：首次启动时从 Bundle 的 Sources 目录导入纯 JSON 书源。
+    /// 全部为 PureReader 原生格式（无 JavaScript 依赖），开箱即用。
     static func seedBuiltInIfNeeded(context: ModelContext) {
         let descriptor = FetchDescriptor<BookSource>()
         let existing = (try? context.fetch(descriptor)) ?? []
         if !existing.isEmpty { return }
 
-        // PureReader 演示书源：指向本地可解析的静态 HTML 模板风格规则
-        // 实际用户可导入社区 JSON
-        let demo = BookSource(
-            name: String(localized: "示例书源（需自行导入可用源）"),
-            groupName: String(localized: "内置"),
-            searchURL: "https://www.example.com/search?q={{key}}&page={{page}}",
-            bookURL: "",
-            tocURL: "",
-            contentURL: "",
-            rules: ParseRule(
-                bookList: "div.book-item",
-                name: "h3@text||a@text",
-                author: "span.author@text",
-                intro: "p.intro@text",
-                coverUrl: "img@src",
-                bookUrl: "a@href",
-                tocUrl: nil,
-                chapterList: "ul.chapters li",
-                chapterName: "a@text",
-                chapterUrl: "a@href",
-                content: "div#content@text||div.content@text",
-                nextPage: nil,
-                replaceRegex: nil
-            ),
-            enabled: false,
-            format: .pureReader,
-            comment: String(localized: "占位示例，默认禁用。请从社区导入可用书源。"),
-            weight: 0
-        )
-        context.insert(demo)
+        var importedCount = 0
+        if let bundleURL = Bundle.main.url(forResource: "Sources", withExtension: nil) {
+            let files = (try? FileManager.default.contentsOfDirectory(
+                at: bundleURL,
+                includingPropertiesForKeys: nil
+            )) ?? []
+            for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+            where file.pathExtension.lowercased() == "json" {
+                guard let data = try? Data(contentsOf: file),
+                      let result = try? importJSON(data, into: context) else { continue }
+                importedCount += result.changed
+            }
+        }
+
+        if importedCount == 0 {
+            // 兜底：资源缺失时保留占位示例，避免空书源库。
+            let demo = BookSource(
+                name: String(localized: "示例书源（需自行导入可用源）"),
+                groupName: String(localized: "内置"),
+                searchURL: "https://www.example.com/search?q={{key}}&page={{page}}",
+                bookURL: "",
+                tocURL: "",
+                contentURL: "",
+                rules: ParseRule(
+                    bookList: "div.book-item",
+                    name: "h3@text||a@text",
+                    author: "span.author@text",
+                    intro: "p.intro@text",
+                    coverUrl: "img@src",
+                    bookUrl: "a@href",
+                    tocUrl: nil,
+                    chapterList: "ul.chapters li",
+                    chapterName: "a@text",
+                    chapterUrl: "a@href",
+                    content: "div#content@text||div.content@text",
+                    nextPage: nil,
+                    replaceRegex: nil
+                ),
+                enabled: false,
+                format: .pureReader,
+                comment: String(localized: "占位示例，默认禁用。请从社区导入可用书源。"),
+                weight: 0
+            )
+            context.insert(demo)
+        }
         try? context.save()
     }
 

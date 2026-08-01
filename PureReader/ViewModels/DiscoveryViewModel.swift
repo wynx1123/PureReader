@@ -202,7 +202,7 @@ final class DiscoveryViewModel {
             }
 
             let limited = Array(list.prefix(5000))
-            let coverData = await downloadCover(item.coverURL)
+            let coverData = await downloadCover(item.coverURL, source: source)
             let book = Book(
                 title: item.name.isEmpty ? String(localized: "未命名") : item.name,
                 author: item.author,
@@ -324,13 +324,19 @@ final class DiscoveryViewModel {
         ["榜", "排行", "热门", "推荐"].contains { title.contains($0) }
     }
 
-    private func downloadCover(_ raw: String?) async -> Data? {
+    private func downloadCover(_ raw: String?, source: BookSourceSnapshot) async -> Data? {
         let maxCoverBytes = 4 * 1024 * 1024
         guard let raw,
               let url = URL(string: raw.trimmingCharacters(in: .whitespacesAndNewlines)),
               ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
         var request = URLRequest(url: url, timeoutInterval: 15)
         request.setValue("image/*", forHTTPHeaderField: "Accept")
+        // 封面 CDN 常带防盗链（如 i.pximg.net 需要 Referer、部分站校验 UA），
+        // 复用书源声明的请求头，避免封面 403 导致「有封面规则但无图」。
+        let headers = BookSourceEngine.parseHeaders(source.headerJSON)
+        for (name, value) in headers where request.value(forHTTPHeaderField: name) == nil {
+            request.setValue(value, forHTTPHeaderField: name)
+        }
         guard let (data, response) = try? await URLSession.shared.data(for: request) else { return nil }
         if let http = response as? HTTPURLResponse,
            !(200...299).contains(http.statusCode) { return nil }

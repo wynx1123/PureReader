@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftData
 
@@ -393,6 +394,11 @@ enum BookSourceEngine {
         let blocks = RuleParser.getStrings(from: body, rule: rules.chapterList, baseURL: base)
         var items: [SourceChapterItem] = []
         if blocks.isEmpty {
+            // 扁平配对兜底仅放行 JSON 响应：HTML 页面在整页跑裸 a@text/a@href
+            // 会把导航栏「登录/注册/分类」链接全抓成章节（详情页 tocUrl 提取失败时的典型垃圾）。
+            // JSON API 书源（单篇无系列时无 novels 数组）才真正依赖这个兜底出单章。
+            let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("{") || trimmed.hasPrefix("[") else { return [] }
             let names = RuleParser.getStrings(from: body, rule: rules.chapterName, baseURL: base)
             let urls = RuleParser.getStrings(from: body, rule: rules.chapterUrl, baseURL: base)
             for i in 0..<min(urls.count, 5000) {
@@ -411,6 +417,32 @@ enum BookSourceEngine {
             items.append(SourceChapterItem(title: title, url: u, index: i))
         }
         return items
+    }
+
+    // MARK: - Book info (detail page)
+
+    /// 书籍详情补全：请求详情页，按 ruleBookInfo（detail*）规则提取书名/作者/简介/封面。
+    /// 用于搜索结果缺封面/简介时补齐（如爱丽丝搜索页无封面，详情页有）。
+    /// detail* 为空时回退到同名搜索规则（兼容老书源）。
+    static func fetchBookInfo(
+        bookURL: String,
+        source: BookSourceSnapshot
+    ) async throws -> (name: String?, author: String?, intro: String?, coverURL: String?) {
+        guard let url = URL(string: bookURL) else { throw BookSourceError.invalidURL }
+        let body = try await fetchString(
+            url: url,
+            sourceHeaderJSON: source.headerJSON,
+            allowHTTPFallback: source.bookURL.hasPrefix("http://")
+        )
+        let rules = source.rules
+        let name = RuleParser.getString(from: body, rule: rules.detailName, baseURL: url)
+        let author = RuleParser.getString(from: body, rule: rules.detailAuthor ?? rules.author, baseURL: url)
+        let intro = RuleParser.getString(from: body, rule: rules.detailIntro ?? rules.intro, baseURL: url)
+        var cover = RuleParser.getString(from: body, rule: rules.detailCoverUrl ?? rules.coverUrl, baseURL: url)
+        if let c = cover, !c.hasPrefix("http") {
+            cover = RuleParser.resolveURL(c, base: url)
+        }
+        return (name, author, intro, cover)
     }
 
     // MARK: - Content
@@ -438,6 +470,12 @@ enum BookSourceEngine {
         )
         var text = RuleParser.getString(from: body, rule: rules.content, baseURL: url)
             ?? RuleParser.stripTags(body)
+        // JSON API 书源的正文字段本身携带 HTML（Pixiv/Linpx content 是带 <p>/<br> 的标记），
+        // CSS @text 规则提取时已剥标签不会命中此分支；仍含标签的提取结果在此转纯文本。
+        // 判定要求字母开头的标签形态，避免误伤正文里的「<3」「a<b」等非标签文本。
+        if text.range(of: "<[a-zA-Z][^>]*>", options: .regularExpression) != nil {
+            text = RuleParser.stripTags(text)
+        }
         text = RuleParser.applyReplacements(text, replaceRegex: rules.replaceRegex)
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -509,6 +547,17 @@ enum BookSourceEngine {
             do {
                 var request = activeRequest
                 request.timeoutInterval = 15
+                if let host = request.url?.host, host == Self.linpxAPIHost,
+                   request.value(forHTTPHeaderField: "X-Linpx-Sign") == nil {
+                    let bodyText = request.httpBody.flatMap { String(data: $0, encoding: .utf8) }
+                    for (name, value) in linpxSignatureHeaders(
+                        url: request.url!,
+                        method: request.httpMethod ?? "GET",
+                        body: bodyText
+                    ) {
+                        request.setValue(value, forHTTPHeaderField: name)
+                    }
+                }
                 let (data, response) = try await session.data(for: request)
                 if verificationChallenge(data: data, response: response, fallbackURL: request.url) {
                     throw BookSourceError.verificationRequired(response.url ?? request.url!)
@@ -544,6 +593,53 @@ enum BookSourceEngine {
             }
         }
         throw lastError
+    }
+
+    // MARK: - Linpx 签名
+
+    private static let linpxAPIHost = "api.linpx.ink"
+
+    /// Linpx API 自 2026-08 起非 cache 端点强制 HMAC-SHA512 签名头，否则返回 {"error":true}。
+    /// 算法取自其公开前端（linpx.ink/assets/index-*.js）：
+    ///   key  = SHA-256(secret + UTC 日期 yyyy-MM-dd)
+    ///   串   = body \n endpoint \n method \n nonce \n query \n timestamp（字段名按字典序）
+    ///   sign = Base64( HMAC-SHA512(key, SHA-256(串)) )
+    /// cache 端点不校验签名，带签名头亦可正常响应，因此统一注入无副作用。
+    private static func linpxSignatureHeaders(url: URL, method: String, body: String?) -> [String: String] {
+        let secret = "264f52c9-2202-4a9d-bb01-e9bca331a7e3"
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "UTC")!
+        let now = Date()
+        let salt = String(
+            format: "%04d-%02d-%02d",
+            calendar.component(.year, from: now),
+            calendar.component(.month, from: now),
+            calendar.component(.day, from: now)
+        )
+        let keyData = Data(SHA256.hash(data: Data((secret + salt).utf8)))
+        let nonce = "\(UInt32.random(in: 0 ... UInt32.max))"
+        let timestamp = "\(Int64(now.timeIntervalSince1970 * 1000))"
+        // 前端对 endpoint/query 做 decodeURI 后再参与签名；URL.path 本身已解码，query 需手动解码。
+        let endpoint = url.path.isEmpty ? "/" : url.path
+        let query = url.query?.removingPercentEncoding ?? url.query ?? ""
+        let signString = [
+            body ?? "",
+            endpoint,
+            method.lowercased(),
+            nonce,
+            query,
+            timestamp,
+        ].joined(separator: "\n")
+        let digest = Data(SHA256.hash(data: Data(signString.utf8)))
+        let sign = Data(
+            HMAC<SHA512>.authenticationCode(for: digest, using: SymmetricKey(data: keyData))
+        ).base64EncodedString()
+        return [
+            "X-Linpx-Nonce": nonce,
+            "X-Linpx-Timestamp": timestamp,
+            "X-Linpx-Sign": sign,
+            "X-Linpx-Version": "1.0",
+        ]
     }
 
     /// Some long-lived community sources still publish an HTTPS URL with an expired,

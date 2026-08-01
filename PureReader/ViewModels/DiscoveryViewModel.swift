@@ -25,6 +25,9 @@ final class DiscoveryViewModel {
     var selectedItem: SourceSearchResult?
     var tocChapters: [SourceChapterItem] = []
     var isLoadingTOC = false
+    /// 详情页补全的封面/简介（搜索列表缺封面时从书籍详情页补齐，如爱丽丝）。
+    var detailCoverURL: String?
+    var detailIntro: String?
     var isAdding = false
     var statusMessage: String?
     var verificationRequest: BookSourceVerificationRequest?
@@ -162,8 +165,16 @@ final class DiscoveryViewModel {
             tocChapters = []
             return
         }
+        detailCoverURL = nil
+        detailIntro = nil
         do {
-            tocChapters = try await BookSourceEngine.fetchTOC(bookURL: item.bookURL, source: source)
+            async let tocTask = BookSourceEngine.fetchTOC(bookURL: item.bookURL, source: source)
+            // 搜索/发现列表缺封面或简介时，并行从详情页补齐；详情失败不阻塞目录展示
+            async let infoTask = BookSourceEngine.fetchBookInfo(bookURL: item.bookURL, source: source)
+            let info = try? await infoTask
+            tocChapters = try await tocTask
+            if item.coverURL == nil { detailCoverURL = info?.coverURL }
+            if item.intro.isEmpty { detailIntro = info?.intro }
         } catch {
             registerVerificationIfNeeded(error, source: source)
             errorMessage = error.localizedDescription
@@ -207,7 +218,14 @@ final class DiscoveryViewModel {
             }
 
             let limited = Array(list.prefix(5000))
-            let coverData = await downloadCover(item.coverURL, source: source)
+            // 搜索结果无封面时，用详情页补全的封面（detailCoverURL 由 loadTOC 填充；
+            // 若用户跳过预览直接添加则现场补取一次）
+            var coverURL = item.coverURL ?? detailCoverURL
+            if coverURL == nil,
+               let info = try? await BookSourceEngine.fetchBookInfo(bookURL: item.bookURL, source: source) {
+                coverURL = info.coverURL
+            }
+            let coverData = await downloadCover(coverURL, source: source)
             let book = Book(
                 title: item.name.isEmpty ? String(localized: "未命名") : item.name,
                 author: item.author,

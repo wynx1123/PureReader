@@ -29,6 +29,12 @@ struct ParseRule: Codable, Hashable, Sendable {
     var chapterName: String?
     var chapterUrl: String?
     var content: String?
+    /// 详情页专用规则（ruleBookInfo）：与搜索列表规则分离，避免同名字段冲突。
+    /// 例如搜索 intro 是列表摘要选择器，详情 intro 是书籍简介选择器。
+    var detailName: String?
+    var detailAuthor: String?
+    var detailIntro: String?
+    var detailCoverUrl: String?
     /// 下一页（可选）
     var nextPage: String?
     /// 替换规则 `old##new@@old2##new2`

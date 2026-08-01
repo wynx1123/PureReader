@@ -261,6 +261,9 @@ struct DiscoveryView: View {
 private struct DiscoveryBookRow: View {
     let item: SourceSearchResult
     let rank: Int?
+    /// 详情页补全的封面/简介（搜索列表缺失时由详情页规则补齐）
+    var coverOverride: String? = nil
+    var introOverride: String? = nil
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -272,7 +275,7 @@ private struct DiscoveryBookRow: View {
                     .padding(.top, 22)
             }
 
-            CoverView(url: item.coverURL, width: 58, height: 78)
+            CoverView(url: coverOverride ?? item.coverURL, width: 58, height: 78)
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.name)
@@ -318,9 +321,14 @@ private struct SearchDetailSheet: View {
         NavigationStack {
             List {
                 Section {
-                    DiscoveryBookRow(item: item, rank: nil)
-                    if !item.intro.isEmpty {
-                        Text(item.intro)
+                    DiscoveryBookRow(
+                        item: item,
+                        rank: nil,
+                        coverOverride: viewModel.detailCoverURL
+                    )
+                    let intro = item.intro.isEmpty ? (viewModel.detailIntro ?? "") : item.intro
+                    if !intro.isEmpty {
+                        Text(intro)
                             .font(.body)
                     }
                 }

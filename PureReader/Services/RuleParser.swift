@@ -465,8 +465,12 @@ enum RuleParser {
 
         for m in openRegex.matches(in: html, options: [], range: range) {
             let attrs = ns.substring(with: m.range(at: 2))
-            // 自闭合标签没有配对的闭合标签，跳过（下面的兜底分支单独处理）。
-            if attrs.hasSuffix("/") { continue }
+            let actualTagEarly = ns.substring(with: m.range(at: 1))
+            // XHTML 风格自闭合的 void 元素（<img ... />）：开标签即完整元素。
+            // 此前先 hasSuffix("/") continue 再判 void，导致自闭合 img 永远被跳过，
+            // 只有 results 全空时的兜底分支能捡回——多层下钻场景（div.imgbox img）封面必丢。
+            let isVoid = Self.voidElements.contains(actualTagEarly.lowercased())
+            if attrs.hasSuffix("/"), !isVoid { continue }
 
             if let className {
                 // class 是空白分隔的 token 列表，做精确 token 比对。
@@ -482,8 +486,8 @@ enum RuleParser {
                 guard attrs.range(of: idPattern, options: [.regularExpression, .caseInsensitive]) != nil else { continue }
             }
 
-            let actualTag = ns.substring(with: m.range(at: 1))
-            if Self.voidElements.contains(actualTag.lowercased()) {
+            let actualTag = actualTagEarly
+            if isVoid {
                 // img / br / input 等空元素没有闭合标签，开标签本身就是完整元素。
                 // 书源里 `img@src` 取封面很常见，不能因为找不到 </img> 就丢弃。
                 results.append(ns.substring(with: m.range))

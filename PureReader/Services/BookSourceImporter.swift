@@ -27,7 +27,11 @@ enum BookSourceImporter {
     // MARK: - Public
 
     @MainActor
-    static func importJSON(_ data: Data, into context: ModelContext) throws -> ImportResult {
+    static func importJSON(
+        _ data: Data,
+        into context: ModelContext,
+        preserveUserState: Bool = false
+    ) throws -> ImportResult {
         let data = normalizedJSONData(data)
         guard let root = try? JSONSerialization.jsonObject(with: data) else {
             throw ImportError.invalidFormat
@@ -60,7 +64,7 @@ enum BookSourceImporter {
                             == candidate.searchURL.trimmingCharacters(in: .whitespacesAndNewlines)
                 }
                 if let current = existingByKey[key] ?? legacyMatch {
-                    update(current, from: candidate)
+                    update(current, from: candidate, preserveUserState: preserveUserState)
                     existingByKey[key] = current
                 } else {
                     context.insert(candidate)
@@ -200,7 +204,7 @@ enum BookSourceImporter {
         return source.formatRaw + "|" + (base.isEmpty ? source.name.lowercased() + "|" + fallback : base)
     }
 
-    private static func update(_ target: BookSource, from source: BookSource) {
+    private static func update(_ target: BookSource, from source: BookSource, preserveUserState: Bool = false) {
         target.name = source.name
         target.groupName = source.groupName
         target.searchURL = source.searchURL
@@ -211,7 +215,10 @@ enum BookSourceImporter {
         target.headerJSON = source.headerJSON
         target.ruleJSON = source.ruleJSON
         target.exploreRuleJSON = source.exploreRuleJSON
-        target.enabled = source.enabled
+        // 内置源随版本同步规则时保留用户开关状态，避免用户禁用的源被反复启用
+        if !preserveUserState {
+            target.enabled = source.enabled
+        }
         target.formatRaw = source.formatRaw
         target.isValid = source.isValid
         target.comment = source.comment
@@ -317,9 +324,12 @@ enum BookSourceImporter {
         return try JSONSerialization.data(withJSONObject: payloads, options: [.prettyPrinted, .sortedKeys])
     }
 
-    /// 内置书源：启动时从 Bundle 的 Sources 目录增量补种纯 JSON 书源。
-    /// 只导入当前书库缺失的内置源（按 name 匹配），不覆盖用户已有书源，
-    /// 因此升级安装后新书源也会出现，而不是仅在空书库时导入。
+    /// 内置书源：启动时从 Bundle 的 Sources 目录同步纯 JSON 书源。
+    /// importJSON 是幂等 upsert（按 identityKey / name+searchURL 匹配），
+    /// 因此：新设备补种缺失书源；老设备把同名内置源升级到 App 内置的最新规则
+    /// （书站改版/签名机制变更只随版本更新规则即可送达，例如 Linpx 2026-08 起
+    /// 要求 HMAC 签名、cache 端点下线）。用户若改了内置源会被官方规则覆盖，
+    /// 需要自定义时请改用「导入」创建独立书源。
     /// 全部为 PureReader 原生格式（无 JavaScript 依赖），开箱即用。
     @MainActor
     static func seedBuiltInIfNeeded(context: ModelContext) {
@@ -335,38 +345,21 @@ enum BookSourceImporter {
             .sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
         guard !files.isEmpty else { return }
 
-        let existing = (try? context.fetch(FetchDescriptor<BookSource>())) ?? []
-        var existingNames = Set(existing.map { $0.name.lowercased() })
-
         var importedCount = 0
         for file in files {
             guard let data = try? Data(contentsOf: file) else {
                 logger.warning("内置书源读取失败: \(file.lastPathComponent)")
                 continue
             }
-            // 文件内所有书源均已存在则跳过（不覆盖用户修改）
-            let names = bundledSourceNames(in: data)
-            if !names.isEmpty, names.allSatisfy({ existingNames.contains($0.lowercased()) }) {
-                continue
-            }
             do {
-                let result = try importJSON(data, into: context)
+                let result = try importJSON(data, into: context, preserveUserState: true)
                 importedCount += result.changed
-                existingNames.formUnion(names.map { $0.lowercased() })
             } catch {
                 logger.warning("内置书源解析失败 \(file.lastPathComponent): \(error.localizedDescription)")
             }
         }
 
         try? context.save()
-    }
-
-    /// 提取内置书源 JSON 中的书源名称列表（增量补种判断用）。
-    private static func bundledSourceNames(in data: Data) -> [String] {
-        guard let root = try? JSONSerialization.jsonObject(with: normalizedJSONData(data)) else { return [] }
-        return sourceObjects(from: root).compactMap { obj in
-            (obj["bookSourceName"] as? String) ?? (obj["name"] as? String)
-        }
     }
 
     // MARK: - Parse one
@@ -509,6 +502,10 @@ enum BookSourceImporter {
                 rules.tocUrl = string(info, "tocUrl")
                 rules.intro = rules.intro ?? string(info, "intro")
                 rules.coverUrl = rules.coverUrl ?? string(info, "coverUrl")
+                rules.detailName = string(info, "name")
+                rules.detailAuthor = string(info, "author")
+                rules.detailIntro = string(info, "intro")
+                rules.detailCoverUrl = string(info, "coverUrl")
             }
             if let toc = obj["ruleToc"] as? [String: Any] {
                 rules.chapterList = string(toc, "chapterList")

@@ -295,10 +295,7 @@ def main() -> None:
     w("\t\t\t);")
     w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
     w("\t\t};")
-    w("/* End PBXSourcesBuildPhase section */")
-
     if test_entries:
-        w("/* Begin PBXSourcesBuildPhase section */")
         w(f"\t\t{tests_sources_phase} /* Sources */ = {{")
         w("\t\t\tisa = PBXSourcesBuildPhase;")
         w("\t\t\tbuildActionMask = 2147483647;")
@@ -308,7 +305,7 @@ def main() -> None:
         w("\t\t\t);")
         w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
         w("\t\t};")
-        w("/* End PBXSourcesBuildPhase section */")
+    w("/* End PBXSourcesBuildPhase section */")
 
     # Frameworks empty
     w("/* Begin PBXFrameworksBuildPhase section */")
@@ -319,10 +316,7 @@ def main() -> None:
     w("\t\t\t);")
     w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
     w("\t\t};")
-    w("/* End PBXFrameworksBuildPhase section */")
-
     if test_entries:
-        w("/* Begin PBXFrameworksBuildPhase section */")
         w(f"\t\t{tests_frameworks_phase} /* Frameworks */ = {{")
         w("\t\t\tisa = PBXFrameworksBuildPhase;")
         w("\t\t\tbuildActionMask = 2147483647;")
@@ -330,7 +324,7 @@ def main() -> None:
         w("\t\t\t);")
         w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")
         w("\t\t};")
-        w("/* End PBXFrameworksBuildPhase section */")
+    w("/* End PBXFrameworksBuildPhase section */")
 
     # Resources
     w("/* Begin PBXResourcesBuildPhase section */")

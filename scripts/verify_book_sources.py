@@ -253,3 +253,198 @@ except Exception as e:
 print("="*60)
 ok = sum(1 for _, o, _ in results if o)
 print(f"结果: {ok}/{len(results)} 通过")
+
+
+def closing_tag_end(ns, tag, after):
+    # 简化：找到第一个 </tag>，深度计数处理嵌套
+    depth = 1
+    open_re = re.compile(rf"<{tag}\b[^>]*>", re.I)
+    close_re = re.compile(rf"</{tag}\s*>", re.I)
+    pos = after
+    while depth > 0:
+        om = open_re.search(ns, pos)
+        cm = close_re.search(ns, pos)
+        if cm is None:
+            return None
+        if om is not None and om.start() < cm.start():
+            depth += 1
+            pos = om.end()
+        else:
+            depth -= 1
+            pos = cm.end()
+    return pos
+
+def match_simple(html, selector):
+    sel = selector.strip()
+    if ":" in sel: sel = sel.split(":")[0]
+    if not sel: return []
+    tag_pat = "[a-zA-Z0-9]+"; cls = None; idn = None
+    if sel.startswith("."):
+        cls = sel[1:]
+    elif sel.startswith("#"):
+        idn = sel[1:]
+    else:
+        m = re.match(r"^([a-zA-Z0-9]+)", sel)
+        tag_pat = m.group(1) if m else "[a-zA-Z0-9]+"
+        rest = sel[len(tag_pat):]
+        if rest.startswith("."): cls = rest[1:]
+        elif rest.startswith("#"): idn = rest[1:]
+    open_re = re.compile(rf"<({tag_pat})\b([^>]*)>", re.I)
+    results = []
+    for m in open_re.finditer(html):
+        attrs = m.group(2)
+        if attrs.rstrip().endswith("/"): continue
+        if cls is not None:
+            cm = re.search(r'class\s*=\s*["\']([^"\']*)["\']', attrs, re.I)
+            if not cm: continue
+            classes = cm.group(1).split()
+            if cls not in classes: continue
+        if idn is not None:
+            if not re.search(rf'id\s*=\s*["\']{re.escape(idn)}["\']', attrs, re.I): continue
+        tag = m.group(1).lower()
+        if tag in VOID:
+            results.append(m.group(0))
+        else:
+            end = closing_tag_end(html, tag, m.end())
+            if end is None: continue
+            results.append(html[m.start():end])
+        if len(results) >= 200: break
+    return results
+
+def inner_html(el):
+    m = re.match(r"^<[^>]*>(.*)$", el, re.S)
+    return m.group(1) if m else el
+
+def match_elements(html, selector):
+    segments = [s for s in re.split(r"\s+", selector.replace(">", " ")) if s]
+    if len(segments) == 1:
+        return match_simple(html, segments[0])
+    current = [html]
+    for i, seg in enumerate(segments):
+        nxt = []
+        for scope in current:
+            hay = scope if i == 0 else inner_html(scope)
+            nxt.extend(match_simple(hay, seg))
+        if not nxt: return []
+        current = nxt[:200]
+    return current
+
+def extract_attr(el, attr, base=None):
+    m = re.search(rf'{re.escape(attr)}\s*=\s*["\']([^"\']*)["\']', el, re.I)
+    if m:
+        return m.group(1)
+    return None
+
+def strip_tags(s):
+    s = re.sub(r"<script[\s\S]*?</script>", "", s, flags=re.I)
+    s = re.sub(r"<style[\s\S]*?</style>", "", s, flags=re.I)
+    s = re.sub(r"<br\s*/?>", "\n", s, flags=re.I)
+    s = re.sub(r"</p>", "\n", s, flags=re.I)
+    s = re.sub(r"</div>", "\n", s, flags=re.I)
+    s = re.sub(r"<[^>]+>", "", s)
+    for a, b in [("&nbsp;"," "),("&lt;","<"),("&gt;",">"),("&amp;","&"),("&quot;",'"'),("&#39;","'")]:
+        s = s.replace(a, b)
+    while "\n\n\n" in s: s = s.replace("\n\n\n", "\n\n")
+    return s.strip()
+
+def get_text(el):
+    return strip_tags(el)
+
+def css_blocks(html, rule):
+    rule = rule.strip()
+    if "@" in rule:
+        parts = [p for p in rule.split("@") if p]
+        sel = parts[0]
+        return match_elements(html, sel)
+    return match_elements(html, rule)
+
+def parse_list(html, rule, base):
+    """evaluateList: CSS 块列表"""
+    return css_blocks(html, rule)
+
+def parse_field(block, rule, base):
+    """evaluateSingle: 从块内取字段，支持 rule@text / rule@href / 正则"""
+    rule = rule.strip()
+    # 替换 ##...##
+    m = re.match(r"^(.*?)##(.+?)##(.*)$", rule)
+    expr = None
+    if m and not rule.startswith("##"):
+        rule = m.group(1); expr = m.group(2)
+    if rule.startswith("##") and rule.endswith("##"):
+        pat = rule[2:-2]
+        mm = re.search(pat, block)
+        return mm.group(1) if (mm and mm.groups()) else (mm.group(0) if mm else None)
+    if "@" in rule:
+        parts = [p for p in rule.split("@") if p]
+        if len(parts) == 2 and parts[1] in ("text","href","src","html","title","alt","data-src","data-original"):
+            els = match_elements(block, parts[0])
+            if not els: return None
+            if parts[1] == "text": v = get_text(els[0])
+            elif parts[1] == "html": v = els[0]
+            else: v = extract_attr(els[0], parts[1], base)
+            if expr:
+                ee = expr.split("##")
+                v = re.sub(ee[0], ee[1] if len(ee) > 1 else "", v) if v else v
+            return v
+    els = match_elements(block, rule)
+    if not els: return None
+    return get_text(els[0])
+
+print("=" * 50)
+print("爱丽丝书屋 书源规则验证")
+print("=" * 50)
+BASE = "https://www.alicesw.com"
+ok = fail = 0
+VOID = {"img","br","input","hr","meta","link","source","embed","area","base","col","wbr","track","param"}
+
+# ══════════════════════════════════════════════════════════════
+# 爱丽丝书屋（HTML 站点，CSS 规则）
+# ══════════════════════════════════════════════════════════════
+def verify_alicesw():
+    print("=" * 60)
+    print("爱丽丝书屋 验证")
+    print("=" * 60)
+    A = "https://www.alicesw.com"
+    ALICE_UA = {"User-Agent": UA}
+    ok = 0; total = 0
+    def check(label, cond, extra=""):
+        nonlocal ok, total
+        total += 1
+        if cond: ok += 1; print(f"✅ {label} {extra}")
+        else: print(f"❌ {label} {extra}")
+
+    # 搜索
+    body = fetch(f"{A}/search.html?q=%E5%9C%B0%E9%93%81", ALICE_UA)
+    blocks = css_blocks(body, "div.list-group-item")
+    check("爱丽丝 搜索列表", len(blocks) > 0, f"{len(blocks)} 条")
+    if blocks:
+        name = parse_field(blocks[0], r"h5 a@text##^\d+\.\s+##", A)
+        url = parse_field(blocks[0], "h5 a@href", A)
+        author = parse_field(blocks[0], "p.mb-1 a@text", A)
+        intro = parse_field(blocks[0], "p.content-txt@text", A)
+        check("爱丽丝 书名", bool(name), f"「{name[:20]}」")
+        check("爱丽丝 详情URL", bool(url) and "/novel/" in url, url or "")
+        check("爱丽丝 作者", bool(author), author or "")
+        check("爱丽丝 简介", bool(intro), intro[:20] or "")
+        # 详情页 → tocUrl 正则
+        detail = fetch(url if url.startswith("http") else A + url, ALICE_UA)
+        toc = re.search(r"/other/chapters/id/\d+\.html", detail)
+        check("爱丽丝 tocUrl 提取", bool(toc), toc.group(0) if toc else "")
+        if toc:
+            toc_html = fetch(toc.group(0) if toc.group(0).startswith("http") else A + toc.group(0), ALICE_UA)
+            chapters = css_blocks(toc_html, "ul.section-list li a")
+            check("爱丽丝 目录", len(chapters) > 0, f"{len(chapters)} 章")
+            if chapters:
+                title = parse_field(chapters[0], "a@text", A)
+                u1 = parse_field(chapters[0], "a@href", A)
+                check("爱丽丝 章节名", bool(title), title[:20])
+                check("爱丽丝 章节URL", bool(u1) and "/book/" in u1, u1 or "")
+                if u1:
+                    chap = fetch(u1 if u1.startswith("http") else A + u1, ALICE_UA)
+                    content = parse_field(chap, "div.content_txt@text", A)
+                    check("爱丽丝 正文", bool(content) and len(content) > 100, f"{len(content or '')} 字")
+    return ok, total
+
+if __name__ == "__main__":
+    ok, total = verify_alicesw()
+    print(f"\n结果: {ok}/{total} 通过")

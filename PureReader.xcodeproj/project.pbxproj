@@ -57,6 +57,7 @@
 		A20D6272AEEB1964F525FA11 /* BackupView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B7590587A6E1AEA3CD53FDA4 /* BackupView.swift */; };
 		192A1D6A37A36F428884270B /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D1DFBA1F13C899B4456A507 /* SettingsView.swift */; };
 		DD767E3CA4EA94D2C274534F /* StatsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4131F59CD796BE318D766A5C /* StatsView.swift */; };
+		204C3C1CB728A6B9A25692A3 /* alicesw.json in Resources */ = {isa = PBXBuildFile; fileRef = 47F6E0832CAF4CEA3769478E /* alicesw.json */; };
 		4B6931FAC142EF87E8D88681 /* linpx.json in Resources */ = {isa = PBXBuildFile; fileRef = 26C5DA697D62ACBAE8DD700A /* linpx.json */; };
 		B09C9021AEBDCAC0B51A8B68 /* pixiv.json in Resources */ = {isa = PBXBuildFile; fileRef = 5C0254D3C03F905B31D0D58D /* pixiv.json */; };
 		D95C2E0E44ACA4D25BC59246 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4BBB33E2E51FAD6570CF4B94 /* Assets.xcassets */; };
@@ -115,6 +116,7 @@
 		B7590587A6E1AEA3CD53FDA4 /* BackupView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackupView.swift; sourceTree = "<group>"; };
 		1D1DFBA1F13C899B4456A507 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		4131F59CD796BE318D766A5C /* StatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsView.swift; sourceTree = "<group>"; };
+		47F6E0832CAF4CEA3769478E /* alicesw.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = alicesw.json; sourceTree = "<group>"; };
 		26C5DA697D62ACBAE8DD700A /* linpx.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = linpx.json; sourceTree = "<group>"; };
 		5C0254D3C03F905B31D0D58D /* pixiv.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = pixiv.json; sourceTree = "<group>"; };
 		4BBB33E2E51FAD6570CF4B94 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -190,6 +192,7 @@
 		B08CB175AAC3AE4F667BDA2D /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				47F6E0832CAF4CEA3769478E /* alicesw.json */,
 				26C5DA697D62ACBAE8DD700A /* linpx.json */,
 				5C0254D3C03F905B31D0D58D /* pixiv.json */,
 			);
@@ -439,6 +442,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				204C3C1CB728A6B9A25692A3 /* alicesw.json in Resources */,
 				4B6931FAC142EF87E8D88681 /* linpx.json in Resources */,
 				B09C9021AEBDCAC0B51A8B68 /* pixiv.json in Resources */,
 				D95C2E0E44ACA4D25BC59246 /* Assets.xcassets in Resources */,

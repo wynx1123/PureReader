@@ -1,0 +1,35 @@
+[
+  {
+    "name": "爱丽丝书屋",
+    "group": "内置",
+    "searchUrl": "https://www.alicesw.com/search.html?q={{key}}",
+    "exploreUrl": "🆕 最新::https://www.alicesw.com/all/order/update_time+desc.html\n🔥 人气::https://www.alicesw.com/all/order/hits+desc.html\n📝 字数::https://www.alicesw.com/all/order/word+desc.html\n🏆 日榜::https://www.alicesw.com/other/rank_hits/order/hits_day.html",
+    "bookUrl": "https://www.alicesw.com",
+    "header": {
+      "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"
+    },
+    "enabled": true,
+    "format": "pureReader",
+    "comment": "爱丽丝书屋（ALICESW.COM）成人向小说站。\n\n✅ 搜索（书名/作者/标签）\n✅ 发现（最新/人气/字数/日榜）\n✅ 目录 + 正文\n\n⚠️ 搜索结果页无封面图（站点限制）；加入书架后封面取自详情页。\n⚠️ 站点含成人内容，请确认已满 18 岁。",
+    "weight": 5,
+    "ruleSearch": {
+      "bookList": "div.list-group-item",
+      "name": "h5 a@text##^\\d+\\.\\s+##",
+      "author": "p.mb-1 a@text",
+      "intro": "p.content-txt@text",
+      "bookUrl": "h5 a@href"
+    },
+    "ruleBookInfo": {
+      "tocUrl": "##/other/chapters/id/\\d+\\.html##",
+      "coverUrl": "div.imgbox img@src"
+    },
+    "ruleToc": {
+      "chapterList": "ul.section-list li a",
+      "chapterName": "a@text",
+      "chapterUrl": "a@href"
+    },
+    "ruleContent": {
+      "content": "div.content_txt@text"
+    }
+  }
+]

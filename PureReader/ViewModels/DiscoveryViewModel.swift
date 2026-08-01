@@ -195,8 +195,12 @@ final class DiscoveryViewModel {
                 return
             }
 
-            let existing = (try? context.fetch(FetchDescriptor<Book>())) ?? []
-            if existing.contains(where: { $0.sourceURL == item.bookURL }) {
+            let existing = try? context.fetch(
+                FetchDescriptor<Book>(
+                    predicate: #Predicate<Book> { $0.sourceURL == item.bookURL }
+                )
+            )
+            if let existing, !existing.isEmpty {
                 statusMessage = String(localized: "这本书已经在书架中")
                 return
             }

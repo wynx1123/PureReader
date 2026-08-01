@@ -513,8 +513,24 @@ enum RuleParser {
 
     private static func extractAttr(from elementHTML: String, attr: String, baseURL: URL?) -> String? {
         let a = attr.lowercased()
-        if a == "text" || a == "textnodes" {
+        if a == "text" {
             return stripTags(elementHTML)
+        }
+        if a == "textnodes" {
+            // 仅直接文本节点：剥离子元素标签块后剩余的内容
+            let inner: String
+            if let openEnd = elementHTML.firstIndex(of: ">"),
+               let closeStart = elementHTML.range(of: "</", options: .backwards)?.lowerBound {
+                inner = String(elementHTML[elementHTML.index(after: openEnd)..<closeStart])
+            } else {
+                inner = elementHTML
+            }
+            let stripped = inner.replacingOccurrences(
+                of: "<[^>]+>",
+                with: "",
+                options: .regularExpression
+            )
+            return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         if a == "html" {
             // inner html
@@ -554,9 +570,41 @@ enum RuleParser {
         s = s.replacingOccurrences(of: "&amp;", with: "&")
         s = s.replacingOccurrences(of: "&quot;", with: "\"")
         s = s.replacingOccurrences(of: "&#39;", with: "'")
+        // numeric entities: &#NN; and &#xHH;
+        s = decodeNumericEntities(s)
         // collapse
         while s.contains("\n\n\n") { s = s.replacingOccurrences(of: "\n\n\n", with: "\n\n") }
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 解码 `&#NNN;` / `&#xHH;` 数字实体（如 &#38; -> &）。
+    /// 逐段扫描避免正则大范围回溯；无效码点原样保留。
+    static func decodeNumericEntities(_ s: String) -> String {
+        guard s.contains("&#") else { return s }
+        var result = ""
+        var i = s.startIndex
+        while i < s.endIndex {
+            if s[i] == "&", let hash = s.index(i, offsetBy: 1, limitedBy: s.endIndex), s[hash] == "#" {
+                let rest = s[hash...]
+                if let semi = rest.firstIndex(of: ";"), semi > hash {
+                    let digits = rest[rest.index(after: hash)..<semi]
+                    let value: UInt32?
+                    if digits.first == "x" || digits.first == "X" {
+                        value = UInt32(digits.dropFirst(), radix: 16)
+                    } else {
+                        value = UInt32(digits, radix: 10)
+                    }
+                    if let value, let scalar = UnicodeScalar(value) {
+                        result.unicodeScalars.append(scalar)
+                        i = s.index(after: semi)
+                        continue
+                    }
+                }
+            }
+            result.append(s[i])
+            i = s.index(after: i)
+        }
+        return result
     }
 
     static func resolveURL(_ url: String, base: URL) -> String {

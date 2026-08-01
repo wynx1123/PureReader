@@ -115,6 +115,8 @@
 		1D1DFBA1F13C899B4456A507 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		4131F59CD796BE318D766A5C /* StatsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatsView.swift; sourceTree = "<group>"; };
 		7B43C5A65D22992F60978286 /* Sources */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Sources; sourceTree = "<group>"; };
+		D22648D2199E7C41BDA237C8 /* RuleParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RuleParserTests.swift; sourceTree = "<group>"; };
+		BEA503B23BE9BD2D2245CEE9 /* PureReaderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PureReaderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		4BBB33E2E51FAD6570CF4B94 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 /* Begin PBXGroup section */
@@ -130,6 +132,7 @@
 			isa = PBXGroup;
 			children = (
 				2678F494CC29BA8E2F0C4643 /* PureReader.app */,
+				BEA503B23BE9BD2D2245CEE9 /* PureReaderTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -144,6 +147,7 @@
 				69F5F72FE6698038BA92286A /* ViewModels */,
 				FAC02F904348844CCC458F4B /* Views */,
 				0B4091C684201BA584940D1A /* Resources */,
+				CB8F3714B53C19324646198E /* PureReaderTests */,
 			);
 			path = PureReader;
 			sourceTree = "<group>";
@@ -174,6 +178,14 @@
 				D1FC36691980EC14C90D5949 /* RewriteRecord.swift */,
 			);
 			path = Models;
+			sourceTree = "<group>";
+		};
+		CB8F3714B53C19324646198E /* PureReaderTests */ = {
+			isa = PBXGroup;
+			children = (
+				D22648D2199E7C41BDA237C8 /* RuleParserTests.swift */,
+			);
+			path = PureReaderTests;
 			sourceTree = "<group>";
 		};
 		0B4091C684201BA584940D1A /* Resources */ = {
@@ -326,6 +338,22 @@
 			productReference = 2678F494CC29BA8E2F0C4643 /* PureReader.app */;
 			productType = "com.apple.product-type.application";
 		};
+		6B1EE4929AA8EB86A8119F32 /* PureReaderTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E8A45F9820CF18FA3A84B0B2 /* Build configuration list for PBXNativeTarget "PureReaderTests" */;
+			buildPhases = (
+				9FEC7086FF7A78C3D99483B0 /* Sources */,
+				2F99214B42712A959228B859 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = PureReaderTests;
+			productName = PureReaderTests;
+			productReference = BEA503B23BE9BD2D2245CEE9 /* PureReaderTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 /* Begin PBXProject section */
 		1781F676DEDF5767F3243DB0 /* Project object */ = {
@@ -414,8 +442,27 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
+/* Begin PBXSourcesBuildPhase section */
+		9FEC7086FF7A78C3D99483B0 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				90DA41474C62738C9F18E5B7 /* RuleParserTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
 /* Begin PBXFrameworksBuildPhase section */
 		56D9DEB7209CC2B39E593F03 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+/* Begin PBXFrameworksBuildPhase section */
+		2F99214B42712A959228B859 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -541,6 +588,64 @@
 			};
 			name = Release;
 		};
+		BE612F08A24885E5B2258DEB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+ALWAYS_SEARCH_USER_PATHS = NO;
+BUNDLE_LOADER = "$(TEST_HOST)";
+CLANG_ENABLE_MODULES = YES;
+CODE_SIGN_STYLE = Automatic;
+CURRENT_PROJECT_VERSION = 1;
+DEVELOPMENT_TEAM = ;
+GENERATE_INFOPLIST_FILE = YES;
+IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+LD_RUNPATH_SEARCH_PATHS = (
+				"$(inherited)",
+				"@executable_path/Frameworks",
+				"@loader_path/Frameworks",
+			);
+MARKETING_VERSION = 1.0;
+PRODUCT_BUNDLE_IDENTIFIER = com.purereader.tests;
+PRODUCT_NAME = '$(TARGET_NAME)';
+SDKROOT = iphoneos;
+SWIFT_VERSION = 5.0;
+TARGETED_DEVICE_FAMILY = '1,2';
+TEST_HOST = '$(BUILT_PRODUCTS_DIR)/PureReader.app/PureReader';
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				DEBUG_INFORMATION_FORMAT = dwarf;
+			};
+			name = Debug;
+		};
+		75EE499C5726E3CF6303AE4A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+ALWAYS_SEARCH_USER_PATHS = NO;
+BUNDLE_LOADER = "$(TEST_HOST)";
+CLANG_ENABLE_MODULES = YES;
+CODE_SIGN_STYLE = Automatic;
+CURRENT_PROJECT_VERSION = 1;
+DEVELOPMENT_TEAM = ;
+GENERATE_INFOPLIST_FILE = YES;
+IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+LD_RUNPATH_SEARCH_PATHS = (
+				"$(inherited)",
+				"@executable_path/Frameworks",
+				"@loader_path/Frameworks",
+			);
+MARKETING_VERSION = 1.0;
+PRODUCT_BUNDLE_IDENTIFIER = com.purereader.tests;
+PRODUCT_NAME = '$(TARGET_NAME)';
+SDKROOT = iphoneos;
+SWIFT_VERSION = 5.0;
+TARGETED_DEVICE_FAMILY = '1,2';
+TEST_HOST = '$(BUILT_PRODUCTS_DIR)/PureReader.app/PureReader';
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 /* Begin XCConfigurationList section */
 		D0CC5AF107D418ACFEE1D49D /* Build configuration list for PBXProject "PureReader" */ = {
@@ -557,6 +662,15 @@
 			buildConfigurations = (
 				189D11A2DAB18FC7672FDF0F /* Debug */,
 				743FEF2DC5931E4B7C1939C8 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		E8A45F9820CF18FA3A84B0B2 /* Build configuration list for PBXNativeTarget "PureReaderTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				BE612F08A24885E5B2258DEB /* Debug */,
+				75EE499C5726E3CF6303AE4A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

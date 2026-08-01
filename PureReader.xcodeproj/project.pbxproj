@@ -47,6 +47,7 @@
 		4C4E8425BD27FF2416A28B7D /* BookSourceVerificationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A8103D8A4FCC6B35427D124 /* BookSourceVerificationView.swift */; };
 		E16C1A349542C05135155FD0 /* CoverView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A7507F5DD08DF794D103507E /* CoverView.swift */; };
 		D642822AEA03E77A8D110C96 /* DiscoveryView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB655F1FB5D5D71D675486F5 /* DiscoveryView.swift */; };
+		DE1185067991ECCFD264E3E0 /* OnlineChapterReaderView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D77762B1EBEC56F1358A469 /* OnlineChapterReaderView.swift */; };
 		1085BC7D0D616967292670EF /* MainTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7EAFA1A4F7672F51DA076432 /* MainTabView.swift */; };
 		5C0369DBC982C1041D134B7F /* BookmarkListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34BD6786C70F3D777F53F56E /* BookmarkListView.swift */; };
 		5DC2A53140A6C1FD5A019218 /* PageContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86C2DF5C0DC69656FF527B34 /* PageContent.swift */; };
@@ -105,6 +106,7 @@
 		2A8103D8A4FCC6B35427D124 /* BookSourceVerificationView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookSourceVerificationView.swift; sourceTree = "<group>"; };
 		A7507F5DD08DF794D103507E /* CoverView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CoverView.swift; sourceTree = "<group>"; };
 		AB655F1FB5D5D71D675486F5 /* DiscoveryView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DiscoveryView.swift; sourceTree = "<group>"; };
+		6D77762B1EBEC56F1358A469 /* OnlineChapterReaderView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnlineChapterReaderView.swift; sourceTree = "<group>"; };
 		7EAFA1A4F7672F51DA076432 /* MainTabView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainTabView.swift; sourceTree = "<group>"; };
 		34BD6786C70F3D777F53F56E /* BookmarkListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BookmarkListView.swift; sourceTree = "<group>"; };
 		86C2DF5C0DC69656FF527B34 /* PageContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PageContent.swift; sourceTree = "<group>"; };
@@ -275,6 +277,7 @@
 				2A8103D8A4FCC6B35427D124 /* BookSourceVerificationView.swift */,
 				A7507F5DD08DF794D103507E /* CoverView.swift */,
 				AB655F1FB5D5D71D675486F5 /* DiscoveryView.swift */,
+				6D77762B1EBEC56F1358A469 /* OnlineChapterReaderView.swift */,
 			);
 			path = Discovery;
 			sourceTree = "<group>";
@@ -403,6 +406,7 @@
 				4C4E8425BD27FF2416A28B7D /* BookSourceVerificationView.swift in Sources */,
 				E16C1A349542C05135155FD0 /* CoverView.swift in Sources */,
 				D642822AEA03E77A8D110C96 /* DiscoveryView.swift in Sources */,
+				DE1185067991ECCFD264E3E0 /* OnlineChapterReaderView.swift in Sources */,
 				1085BC7D0D616967292670EF /* MainTabView.swift in Sources */,
 				5C0369DBC982C1041D134B7F /* BookmarkListView.swift in Sources */,
 				5DC2A53140A6C1FD5A019218 /* PageContent.swift in Sources */,

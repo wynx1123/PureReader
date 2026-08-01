@@ -9,6 +9,9 @@ struct DiscoveryCategoryOption: Identifiable, Hashable, Sendable {
     var query: String
     var entries: [SourceExploreCategory]
     var isRanking: Bool
+    /// 归属书源（发现页按书源分组展示分类；nil 表示跨源聚合/回退分类）
+    var sourceID: UUID? = nil
+    var sourceName: String? = nil
 }
 
 @MainActor
@@ -19,6 +22,11 @@ final class DiscoveryViewModel {
     var discoveryResults: [SourceSearchResult] = []
     var categories: [DiscoveryCategoryOption] = []
     var selectedCategoryID = ""
+    /// 当前选中的书源（发现页分类按书源分组；nil 表示尚无可用书源）
+    var selectedSourceID: UUID?
+    /// 搜索/发现结果缺封面时，从详情页懒加载的封面缓存（bookURL → coverURL，空串=已确认无封面）
+    var coverOverrides: [String: String] = [:]
+    private var coverPrefetching = Set<String>()
     var isSearching = false
     var isLoadingDiscovery = false
     var errorMessage: String?
@@ -38,6 +46,24 @@ final class DiscoveryViewModel {
 
     var selectedCategory: DiscoveryCategoryOption? {
         categories.first { $0.id == selectedCategoryID }
+    }
+
+    /// 有 explore 分类的书源列表（按权重序，与 categories 同源）
+    var explorableSources: [(id: UUID, name: String)] {
+        var seen = Set<UUID>()
+        var out: [(UUID, String)] = []
+        for category in categories {
+            guard let sid = category.sourceID, let name = category.sourceName,
+                  seen.insert(sid).inserted else { continue }
+            out.append((sid, name))
+        }
+        return out
+    }
+
+    /// 当前书源下的分类（按书源分组后的第二行 chips）
+    var visibleCategories: [DiscoveryCategoryOption] {
+        guard let sid = selectedSourceID else { return categories }
+        return categories.filter { $0.sourceID == sid }
     }
 
     func prepareSources(_ sources: [BookSource]) -> [BookSourceSnapshot] {
@@ -63,10 +89,27 @@ final class DiscoveryViewModel {
 
         let sourceCategories = BookSourceEngine.exploreCategories(snapshots: snapshots)
         categories = makeCategories(sourceCategories)
-        if !categories.contains(where: { $0.id == selectedCategoryID }) {
-            selectedCategoryID = categories.first?.id ?? ""
+        // 书源分组后：保持已选书源（仍存在时），否则默认第一个有分类的书源
+        let sourceIDs = Set(categories.compactMap(\.sourceID))
+        if let sid = selectedSourceID, !sourceIDs.contains(sid) {
+            selectedSourceID = nil
+        }
+        if selectedSourceID == nil {
+            selectedSourceID = categories.first(where: { $0.sourceID != nil })?.sourceID
+        }
+        if !visibleCategories.contains(where: { $0.id == selectedCategoryID }) {
+            selectedCategoryID = visibleCategories.first?.id ?? ""
         }
         loadSelectedCategory(snapshots: snapshots)
+    }
+
+    /// 切换发现页书源（分类按书源分组；自动选中该源第一个分类并加载）
+    func selectSource(_ sourceID: UUID, sources: [BookSource]) {
+        guard selectedSourceID != sourceID else { return }
+        selectedSourceID = sourceID
+        selectedCategoryID = visibleCategories.first?.id ?? ""
+        discoveryResults = []
+        loadSelectedCategory(snapshots: prepareSources(sources))
     }
 
     func selectCategory(_ category: DiscoveryCategoryOption, sources: [BookSource]) {
@@ -304,21 +347,44 @@ final class DiscoveryViewModel {
         )
     }
 
+    /// 按书源分组生成分类（不再跨源合并同名分类）：
+    /// 每个 option 归属单一书源，发现页先选书源再选该源分类。
     private func makeCategories(_ sourceCategories: [SourceExploreCategory]) -> [DiscoveryCategoryOption] {
-        let grouped = Dictionary(grouping: sourceCategories, by: { $0.title.trimmingCharacters(in: .whitespacesAndNewlines) })
-        var options = grouped.keys.sorted { lhs, rhs in
-            categoryPriority(lhs) < categoryPriority(rhs)
-        }.map { title in
-            DiscoveryCategoryOption(
-                id: "source:" + title,
-                title: title,
-                query: title,
-                entries: grouped[title] ?? [],
-                isRanking: isRankingTitle(title)
-            )
+        // 保持书源出现顺序（exploreCategories 已按快照顺序），同源内按分类优先级排序
+        var bySource: [UUID: (name: String, entries: [SourceExploreCategory])] = [:]
+        var sourceOrder: [UUID] = []
+        for entry in sourceCategories {
+            if bySource[entry.sourceID] == nil {
+                bySource[entry.sourceID] = (entry.sourceName, [])
+                sourceOrder.append(entry.sourceID)
+            }
+            bySource[entry.sourceID]?.entries.append(entry)
         }
-        let existingTitles = Set(options.map { $0.title })
-        options.append(contentsOf: fallbackCategories().filter { !existingTitles.contains($0.title) })
+        var options: [DiscoveryCategoryOption] = []
+        for sid in sourceOrder {
+            guard let group = bySource[sid] else { continue }
+            let sorted = group.entries.sorted {
+                categoryPriority($0.title.trimmingCharacters(in: .whitespacesAndNewlines))
+                    < categoryPriority($1.title.trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+            var seenTitles = Set<String>()
+            for entry in sorted {
+                let title = entry.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard seenTitles.insert(title).inserted else { continue }
+                options.append(DiscoveryCategoryOption(
+                    id: sid.uuidString + ":" + title,
+                    title: title,
+                    query: title,
+                    entries: [entry],
+                    isRanking: isRankingTitle(title),
+                    sourceID: sid,
+                    sourceName: group.name
+                ))
+            }
+        }
+        if options.isEmpty {
+            options.append(contentsOf: fallbackCategories())
+        }
         return options
     }
 
@@ -365,6 +431,21 @@ final class DiscoveryViewModel {
            !(200...299).contains(http.statusCode) { return nil }
         guard !data.isEmpty, data.count <= maxCoverBytes, UIImage(data: data) != nil else { return nil }
         return data
+    }
+
+    /// 搜索结果无封面时，后台从书籍详情页懒加载封面（滚动到可见才触发，结果缓存）。
+    /// 确认无封面的也缓存空串，避免同一本书反复请求。
+    func prefetchCoverIfNeeded(for item: SourceSearchResult, sources: [BookSource]) {
+        guard item.coverURL == nil else { return }
+        let key = item.bookURL
+        guard coverOverrides[key] == nil, !coverPrefetching.contains(key) else { return }
+        coverPrefetching.insert(key)
+        Task {
+            defer { coverPrefetching.remove(key) }
+            guard let source = resolveSource(item: item, sources: sources) else { return }
+            let info = try? await BookSourceEngine.fetchBookInfo(bookURL: item.bookURL, source: source)
+            coverOverrides[key] = info?.coverURL ?? ""
+        }
     }
 
     private func resolveSource(

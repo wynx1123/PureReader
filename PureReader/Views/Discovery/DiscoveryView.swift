@@ -109,6 +109,7 @@ struct DiscoveryView: View {
     private var discoveryContent: some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 16) {
+                sourceBar
                 categoryBar
 
                 HStack {
@@ -146,10 +147,14 @@ struct DiscoveryView: View {
                             } label: {
                                 DiscoveryBookRow(
                                     item: item,
-                                    rank: viewModel.selectedCategory?.isRanking == true ? index + 1 : nil
+                                    rank: viewModel.selectedCategory?.isRanking == true ? index + 1 : nil,
+                                    coverOverride: viewModel.coverOverrides[item.bookURL].flatMap { $0.isEmpty ? nil : $0 }
                                 )
                             }
                             .buttonStyle(.plain)
+                            .onAppear {
+                                viewModel.prefetchCoverIfNeeded(for: item, sources: sources)
+                            }
                             Divider().padding(.leading, 88)
                         }
                     }
@@ -171,10 +176,41 @@ struct DiscoveryView: View {
         }
     }
 
+    /// 书源选择行（发现页按书源分组：先选书源，再选该源分类）
+    @ViewBuilder
+    private var sourceBar: some View {
+        let explorable = viewModel.explorableSources
+        if explorable.count > 1 {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 10) {
+                    ForEach(explorable, id: \.id) { source in
+                        Button {
+                            viewModel.selectSource(source.id, sources: sources)
+                        } label: {
+                            Text(source.name)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(viewModel.selectedSourceID == source.id ? Color.white : Color.primary)
+                                .padding(.horizontal, 15)
+                                .frame(height: 34)
+                                .background(
+                                    viewModel.selectedSourceID == source.id
+                                        ? Color.indigo
+                                        : Color.secondary.opacity(0.12),
+                                    in: Capsule()
+                                )
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 16)
+            }
+        }
+    }
+
     private var categoryBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
-                ForEach(viewModel.categories) { category in
+                ForEach(viewModel.visibleCategories) { category in
                     Button {
                         viewModel.selectCategory(category, sources: sources)
                     } label: {
@@ -235,9 +271,17 @@ struct DiscoveryView: View {
                 Button {
                     detailItem = item
                 } label: {
-                    DiscoveryBookRow(item: item, rank: ranked ? index + 1 : nil)
+                    DiscoveryBookRow(
+                        item: item,
+                        rank: ranked ? index + 1 : nil,
+                        coverOverride: viewModel.coverOverrides[item.bookURL].flatMap { $0.isEmpty ? nil : $0 }
+                    )
                 }
                 .buttonStyle(.plain)
+                // 无封面的书滚动到可见时，后台从详情页懒加载封面（爱丽丝等列表无图站点）
+                .onAppear {
+                    viewModel.prefetchCoverIfNeeded(for: item, sources: sources)
+                }
             }
         }
         .listStyle(.plain)
@@ -316,6 +360,8 @@ private struct SearchDetailSheet: View {
     @Bindable var viewModel: DiscoveryViewModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.modelContext) private var modelContext
+    /// 在线试读的起始章节（nil = 未打开试读）
+    @State private var readingIndex: Int?
 
     var body: some View {
         NavigationStack {
@@ -343,8 +389,21 @@ private struct SearchDetailSheet: View {
                         Text(String(localized: "暂无目录"))
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(Array(viewModel.tocChapters.prefix(60))) { chapter in
-                            Text(chapter.title).font(.subheadline)
+                        ForEach(Array(viewModel.tocChapters.prefix(60).enumerated()), id: \.element.id) { index, chapter in
+                            Button {
+                                readingIndex = index
+                            } label: {
+                                HStack {
+                                    Text(chapter.title)
+                                        .font(.subheadline)
+                                        .foregroundStyle(.primary)
+                                    Spacer()
+                                    Image(systemName: "book")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .buttonStyle(.plain)
                         }
                         if viewModel.tocChapters.count > 60 {
                             Text(String(localized: "共 \(viewModel.tocChapters.count) 章，加入书架后可查看完整目录"))
@@ -372,6 +431,20 @@ private struct SearchDetailSheet: View {
             }
             .task {
                 await viewModel.loadTOC(for: item, sources: sources)
+            }
+            .fullScreenCover(isPresented: Binding(
+                get: { readingIndex != nil },
+                set: { if !$0 { readingIndex = nil } }
+            )) {
+                if let readingIndex,
+                   let bookSource = sources.first(where: { $0.id == item.sourceID }) {
+                    OnlineChapterReaderView(
+                        bookName: item.name,
+                        chapters: viewModel.tocChapters,
+                        startIndex: readingIndex,
+                        source: BookSourceSnapshot(bookSource)
+                    )
+                }
             }
         }
     }

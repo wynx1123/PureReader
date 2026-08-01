@@ -317,69 +317,56 @@ enum BookSourceImporter {
         return try JSONSerialization.data(withJSONObject: payloads, options: [.prettyPrinted, .sortedKeys])
     }
 
-    /// 内置书源：首次启动时从 Bundle 的 Sources 目录导入纯 JSON 书源。
+    /// 内置书源：启动时从 Bundle 的 Sources 目录增量补种纯 JSON 书源。
+    /// 只导入当前书库缺失的内置源（按 name 匹配），不覆盖用户已有书源，
+    /// 因此升级安装后新书源也会出现，而不是仅在空书库时导入。
     /// 全部为 PureReader 原生格式（无 JavaScript 依赖），开箱即用。
     @MainActor
     static func seedBuiltInIfNeeded(context: ModelContext) {
-        let descriptor = FetchDescriptor<BookSource>()
-        let existing = (try? context.fetch(descriptor)) ?? []
-        if !existing.isEmpty { return }
+        guard let bundleURL = Bundle.main.url(forResource: "Sources", withExtension: nil) else {
+            logger.warning("Bundle 内未找到 Sources 目录，内置书源未导入")
+            return
+        }
+        let files = ((try? FileManager.default.contentsOfDirectory(
+            at: bundleURL,
+            includingPropertiesForKeys: nil
+        )) ?? [])
+            .filter { $0.pathExtension.lowercased() == "json" }
+            .sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
+        guard !files.isEmpty else { return }
+
+        let existing = (try? context.fetch(FetchDescriptor<BookSource>())) ?? []
+        var existingNames = Set(existing.map { $0.name.lowercased() })
 
         var importedCount = 0
-        if let bundleURL = Bundle.main.url(forResource: "Sources", withExtension: nil) {
-            let files = (try? FileManager.default.contentsOfDirectory(
-                at: bundleURL,
-                includingPropertiesForKeys: nil
-            )) ?? []
-            for file in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
-            where file.pathExtension.lowercased() == "json" {
-                guard let data = try? Data(contentsOf: file) else {
-                    logger.warning("内置书源读取失败: \(file.lastPathComponent)")
-                    continue
-                }
-                do {
-                    let result = try importJSON(data, into: context)
-                    importedCount += result.changed
-                } catch {
-                    logger.warning("内置书源解析失败 \(file.lastPathComponent): \(error.localizedDescription)")
-                }
+        for file in files {
+            guard let data = try? Data(contentsOf: file) else {
+                logger.warning("内置书源读取失败: \(file.lastPathComponent)")
+                continue
             }
-        } else {
-            logger.warning("Bundle 内未找到 Sources 目录，内置书源未导入")
+            // 文件内所有书源均已存在则跳过（不覆盖用户修改）
+            let names = bundledSourceNames(in: data)
+            if !names.isEmpty, names.allSatisfy({ existingNames.contains($0.lowercased()) }) {
+                continue
+            }
+            do {
+                let result = try importJSON(data, into: context)
+                importedCount += result.changed
+                existingNames.formUnion(names.map { $0.lowercased() })
+            } catch {
+                logger.warning("内置书源解析失败 \(file.lastPathComponent): \(error.localizedDescription)")
+            }
         }
 
-        if importedCount == 0 {
-            // 兜底：资源缺失时保留占位示例，避免空书源库。
-            let demo = BookSource(
-                name: String(localized: "示例书源（需自行导入可用源）"),
-                groupName: String(localized: "内置"),
-                searchURL: "https://www.example.com/search?q={{key}}&page={{page}}",
-                bookURL: "",
-                tocURL: "",
-                contentURL: "",
-                rules: ParseRule(
-                    bookList: "div.book-item",
-                    name: "h3@text||a@text",
-                    author: "span.author@text",
-                    intro: "p.intro@text",
-                    coverUrl: "img@src",
-                    bookUrl: "a@href",
-                    tocUrl: nil,
-                    chapterList: "ul.chapters li",
-                    chapterName: "a@text",
-                    chapterUrl: "a@href",
-                    content: "div#content@text||div.content@text",
-                    nextPage: nil,
-                    replaceRegex: nil
-                ),
-                enabled: false,
-                format: .pureReader,
-                comment: String(localized: "占位示例，默认禁用。请从社区导入可用书源。"),
-                weight: 0
-            )
-            context.insert(demo)
-        }
         try? context.save()
+    }
+
+    /// 提取内置书源 JSON 中的书源名称列表（增量补种判断用）。
+    private static func bundledSourceNames(in data: Data) -> [String] {
+        guard let root = try? JSONSerialization.jsonObject(with: normalizedJSONData(data)) else { return [] }
+        return sourceObjects(from: root).compactMap { obj in
+            (obj["bookSourceName"] as? String) ?? (obj["name"] as? String)
+        }
     }
 
     // MARK: - Parse one

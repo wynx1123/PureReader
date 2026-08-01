@@ -165,7 +165,10 @@ enum BookSourceEngine {
             throw BookSourceError.unsupportedRequest
         }
         guard let url = request.url else { throw BookSourceError.invalidURL }
-        let body = try await fetchString(request: request)
+        let body = try await fetchString(
+            request: request,
+            allowHTTPFallback: source.bookURL.hasPrefix("http://")
+        )
         let rules = source.rules
         let blocks = RuleParser.getStrings(from: body, rule: rules.bookList, baseURL: url)
         if blocks.isEmpty {
@@ -197,7 +200,7 @@ enum BookSourceEngine {
         return results
     }
 
-    private static func parseSearchFromRoot(
+    static func parseSearchFromRoot(
         body: String,
         url: URL,
         source: BookSourceSnapshot
@@ -368,17 +371,25 @@ enum BookSourceEngine {
             throw BookSourceError.invalidURL
         }
         // If tocURL empty in rules, fetch book page and extract tocUrl then list
-        var body = try await fetchString(url: url, sourceHeaderJSON: source.headerJSON)
+        var body = try await fetchString(
+            url: url,
+            sourceHeaderJSON: source.headerJSON,
+            allowHTTPFallback: source.bookURL.hasPrefix("http://")
+        )
         if let tocRule = rules.tocUrl, !tocRule.isEmpty,
            let next = RuleParser.getString(from: body, rule: tocRule, baseURL: url),
            let nextURL = URL(string: next.hasPrefix("http") ? next : RuleParser.resolveURL(next, base: url)) {
-            body = try await fetchString(url: nextURL, sourceHeaderJSON: source.headerJSON)
+            body = try await fetchString(
+                url: nextURL,
+                sourceHeaderJSON: source.headerJSON,
+                allowHTTPFallback: source.bookURL.hasPrefix("http://")
+            )
             return parseChapters(body: body, base: nextURL, rules: rules)
         }
         return parseChapters(body: body, base: url, rules: rules)
     }
 
-    private static func parseChapters(body: String, base: URL, rules: ParseRule) -> [SourceChapterItem] {
+    static func parseChapters(body: String, base: URL, rules: ParseRule) -> [SourceChapterItem] {
         let blocks = RuleParser.getStrings(from: body, rule: rules.chapterList, baseURL: base)
         var items: [SourceChapterItem] = []
         if blocks.isEmpty {
@@ -420,7 +431,11 @@ enum BookSourceEngine {
             .replacingOccurrences(of: "{chapterUrl}", with: chapterURL)
         if urlString.isEmpty { urlString = chapterURL }
         guard let url = URL(string: urlString) else { throw BookSourceError.invalidURL }
-        let body = try await fetchString(url: url, sourceHeaderJSON: source.headerJSON)
+        let body = try await fetchString(
+            url: url,
+            sourceHeaderJSON: source.headerJSON,
+            allowHTTPFallback: source.bookURL.hasPrefix("http://")
+        )
         var text = RuleParser.getString(from: body, rule: rules.content, baseURL: url)
             ?? RuleParser.stripTags(body)
         text = RuleParser.applyReplacements(text, replaceRegex: rules.replaceRegex)
@@ -473,16 +488,20 @@ enum BookSourceEngine {
 
     private static func fetchString(
         url: URL,
-        sourceHeaderJSON: String = ""
+        sourceHeaderJSON: String = "",
+        allowHTTPFallback: Bool = false
     ) async throws -> String {
         var request = URLRequest(url: url)
         for (name, value) in parseHeaders(sourceHeaderJSON) {
             request.setValue(value, forHTTPHeaderField: name)
         }
-        return try await fetchString(request: request)
+        return try await fetchString(request: request, allowHTTPFallback: allowHTTPFallback)
     }
 
-    private static func fetchString(request initialRequest: URLRequest) async throws -> String {
+    private static func fetchString(
+        request initialRequest: URLRequest,
+        allowHTTPFallback: Bool = false
+    ) async throws -> String {
         var lastError: Error = BookSourceError.network
         var activeRequest = initialRequest
         var didTryHTTPFallback = false
@@ -508,7 +527,9 @@ enum BookSourceEngine {
                 throw error
             } catch {
                 lastError = error
-                if !didTryHTTPFallback,
+                // HTTPS 降级仅限书源显式配置 http:// 的情况（隐私/安全优先，
+                // 避免搜索关键词走明文 + 中间人篡改）
+                if allowHTTPFallback, !didTryHTTPFallback,
                    let fallback = httpFallbackRequest(for: activeRequest, after: error) {
                     activeRequest = fallback
                     didTryHTTPFallback = true
@@ -746,7 +767,7 @@ enum BookSourceEngine {
         )
     }
 
-    private static func parseHeaders(_ value: Any?) -> [String: String] {
+    static func parseHeaders(_ value: Any?) -> [String: String] {
         if let headers = value as? [String: Any] {
             return sanitizeHeaders(headers)
         }
@@ -935,7 +956,9 @@ enum BookSourceEngine {
         encoding: String.Encoding
     ) -> String {
         guard let data = value.data(using: encoding) else { return value }
-        let unreserved = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._*%".utf8)
+        // RFC 1866 application/x-www-form-urlencoded unreserved：字母数字 + * - . _
+        // 注意不能包含 %：否则关键词里已转义的序列会原样透传，服务端解码出错
+        let unreserved = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._*".utf8)
         return data.map { byte in
             if unreserved.contains(byte) { return String(UnicodeScalar(byte)) }
             if byte == 0x20 { return "+" }

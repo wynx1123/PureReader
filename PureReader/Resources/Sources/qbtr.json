@@ -1,0 +1,40 @@
+[
+  {
+    "name": "同人小说网",
+    "group": "内置",
+    "searchUrl": "https://www.qbtr.org/e/search/index.php, {\"method\":\"POST\",\"charset\":\"gb2312\",\"body\":\"keyboard={{key}}&show=title&classid=0\",\"headers\":{\"Content-Type\":\"application/x-www-form-urlencoded; charset=gb2312\",\"Referer\":\"https://www.qbtr.org/\"}}",
+    "exploreUrl": "🏆 热门排行::https://www.qbtr.org/hot/\n📚 同人小说::https://www.qbtr.org/tongren/\n📖 常规小说::https://www.qbtr.org/changgui/",
+    "bookUrl": "https://www.qbtr.org",
+    "header": {"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148"},
+    "enabled": true,
+    "format": "pureReader",
+    "comment": "全本同人小说网（成人向同人/常规小说；站点为 GB2312 编码，搜索接口为 POST 表单）",
+    "weight": 8,
+    "ruleSearch": {
+      "bookList": "div.bk",
+      "name": "h3 a@text||h3@text",
+      "intro": "p@text##^简介：\\s*##",
+      "coverUrl": "",
+      "bookUrl": "h3 a@href||a@href"
+    },
+    "ruleBookInfo": {
+      "tocUrl": "",
+      "coverUrl": ""
+    },
+    "ruleToc": {
+      "chapterList": "div.book_list li a",
+      "chapterName": "a@text##^\\s+##",
+      "chapterUrl": "a@href"
+    },
+    "ruleContent": {
+      "content": "div.read_chapterDetail@text"
+    },
+    "ruleExplore": {
+      "bookList": "div.bk",
+      "name": "h3 a@text||h3@text",
+      "intro": "p@text",
+      "coverUrl": "",
+      "bookUrl": "a@href"
+    }
+  }
+]

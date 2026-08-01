@@ -76,6 +76,11 @@ enum RuleParser {
     }
 
     private static func evaluateList(content: String, rule: String, baseURL: URL?) -> [String] {
+        // JSON URL 模板（列表模式）：`https://api.example.com/book/{{$.novels.id}}`
+        // 渲染成逐项 URL 列表。JSON API 书源常用它把 id 字段拼成完整详情地址。
+        if rule.contains("{{"), rule.contains("}}") {
+            return jsonTemplateList(content: content, template: rule)
+        }
         if rule.hasPrefix("$.") || rule.hasPrefix("$[") {
             return jsonList(content: content, path: rule)
         }
@@ -83,6 +88,45 @@ enum RuleParser {
         // 格式：`div.book` 或 `div.book@html` 作为块，由调用方再解析字段
         let (extractionRule, _) = splitExtractionAndReplacement(rule)
         return cssBlocks(content: content, rule: normalizeLegadoRule(extractionRule))
+    }
+
+    /// 模板列表：对 `{{$.a.b}}` 形式的 JSON 模板按列表逐项渲染。
+    /// 模板中出现多个路径时以最长列表为基准，其余路径按索引对齐
+    /// （越界时复用最后一项，避免整体丢弃）。
+    private static func jsonTemplateList(content: String, template: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"\{\{(\$[^}]+)\}\}"#) else { return [] }
+        let matches = regex.matches(
+            in: template,
+            range: NSRange(template.startIndex..., in: template)
+        )
+        guard !matches.isEmpty else { return [] }
+        var paths: [String] = []
+        for match in matches {
+            if let r = Range(match.range(at: 1), in: template) {
+                paths.append(String(template[r]))
+            }
+        }
+        // 每个路径的取值列表；全部为空则模板不可渲染
+        let lists = paths.map { jsonList(content: content, path: $0) }
+        let count = lists.compactMap { $0.isEmpty ? nil : $0.count }.max() ?? 0
+        guard count > 0 else { return [] }
+        var results: [String] = []
+        results.reserveCapacity(count)
+        for index in 0..<count {
+            var rendered = template
+            var failed = false
+            // 倒序遍历避免前面的替换改变后面 range 的位置
+            for (pathIndex, match) in matches.enumerated().reversed() {
+                guard let fullRange = Range(match.range(at: 0), in: rendered) else { continue }
+                let list = lists[pathIndex]
+                let value = list.isEmpty ? nil : list[min(index, list.count - 1)]
+                guard let value else { failed = true; break }
+                rendered.replaceSubrange(fullRange, with: value)
+            }
+            if failed || rendered.contains("{{") { continue }
+            results.append(rendered)
+        }
+        return results
     }
 
     private static func normalizeLegadoRule(_ rule: String) -> String {
@@ -469,8 +513,24 @@ enum RuleParser {
 
     private static func extractAttr(from elementHTML: String, attr: String, baseURL: URL?) -> String? {
         let a = attr.lowercased()
-        if a == "text" || a == "textnodes" {
+        if a == "text" {
             return stripTags(elementHTML)
+        }
+        if a == "textnodes" {
+            // 仅直接文本节点：剥离子元素标签块后剩余的内容
+            let inner: String
+            if let openEnd = elementHTML.firstIndex(of: ">"),
+               let closeStart = elementHTML.range(of: "</", options: .backwards)?.lowerBound {
+                inner = String(elementHTML[elementHTML.index(after: openEnd)..<closeStart])
+            } else {
+                inner = elementHTML
+            }
+            let stripped = inner.replacingOccurrences(
+                of: "<[^>]+>",
+                with: "",
+                options: .regularExpression
+            )
+            return stripped.trimmingCharacters(in: .whitespacesAndNewlines)
         }
         if a == "html" {
             // inner html
@@ -510,9 +570,41 @@ enum RuleParser {
         s = s.replacingOccurrences(of: "&amp;", with: "&")
         s = s.replacingOccurrences(of: "&quot;", with: "\"")
         s = s.replacingOccurrences(of: "&#39;", with: "'")
+        // numeric entities: &#NN; and &#xHH;
+        s = decodeNumericEntities(s)
         // collapse
         while s.contains("\n\n\n") { s = s.replacingOccurrences(of: "\n\n\n", with: "\n\n") }
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// 解码 `&#NNN;` / `&#xHH;` 数字实体（如 &#38; -> &）。
+    /// 逐段扫描避免正则大范围回溯；无效码点原样保留。
+    static func decodeNumericEntities(_ s: String) -> String {
+        guard s.contains("&#") else { return s }
+        var result = ""
+        var i = s.startIndex
+        while i < s.endIndex {
+            if s[i] == "&", let hash = s.index(i, offsetBy: 1, limitedBy: s.endIndex), s[hash] == "#" {
+                let rest = s[hash...]
+                if let semi = rest.firstIndex(of: ";"), semi > hash {
+                    let digits = rest[rest.index(after: hash)..<semi]
+                    let value: UInt32?
+                    if digits.first == "x" || digits.first == "X" {
+                        value = UInt32(digits.dropFirst(), radix: 16)
+                    } else {
+                        value = UInt32(digits, radix: 10)
+                    }
+                    if let value, let scalar = UnicodeScalar(value) {
+                        result.unicodeScalars.append(scalar)
+                        i = s.index(after: semi)
+                        continue
+                    }
+                }
+            }
+            result.append(s[i])
+            i = s.index(after: i)
+        }
+        return result
     }
 
     static func resolveURL(_ url: String, base: URL) -> String {

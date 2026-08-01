@@ -32,3 +32,4 @@ tmp/
 .temp/
 
 build-output/
+scripts/__pycache__/

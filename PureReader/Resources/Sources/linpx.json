@@ -1,0 +1,37 @@
+[
+  {
+    "name": "Linpx（Pixiv 小说镜像）",
+    "group": "内置",
+    "searchUrl": "https://api.linpx.ink/pixiv/search/novel/{{key}}/cache?page={{page}}",
+    "exploreUrl": "🆕 最新::https://api.linpx.ink/pixiv/novels/recent/cache?page={{page}}",
+    "bookUrl": "https://api.linpx.ink",
+    "header": {
+      "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148",
+      "Referer": "https://www.pixiv.net/",
+      "Accept": "application/json"
+    },
+    "enabled": true,
+    "format": "pureReader",
+    "comment": "Linpx 是 Pixiv 小说的国内镜像站（无需登录即可访问全部内容，含 R-18）。\n\n✅ 搜索（小说标题）\n✅ 发现（最新）\n✅ 目录（单篇/系列）\n✅ 正文\n✅ 封面（经 Referer 防盗链放行）\n\n⚠️ 搜索只匹配单篇标题；系列名不参与搜索。\nR-18 内容请确认已满 18 岁。",
+    "weight": 10,
+    "ruleSearch": {
+      "bookList": "$.novels",
+      "name": "$.title",
+      "author": "$.userName",
+      "intro": "$.desc",
+      "coverUrl": "$.coverUrl",
+      "bookUrl": "https://api.linpx.ink/pixiv/novel/{{$.id}}/cache"
+    },
+    "ruleBookInfo": {
+      "tocUrl": "https://api.linpx.ink/pixiv/series/{{$.series.id}}/cache"
+    },
+    "ruleToc": {
+      "chapterList": "$.novels",
+      "chapterName": "$.title",
+      "chapterUrl": "https://api.linpx.ink/pixiv/novel/{{$.id}}/cache"
+    },
+    "ruleContent": {
+      "content": "$.content"
+    }
+  }
+]

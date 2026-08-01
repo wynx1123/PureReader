@@ -272,20 +272,7 @@ private struct DiscoveryBookRow: View {
                     .padding(.top, 22)
             }
 
-            AsyncImage(url: item.coverURL.flatMap(URL.init(string:))) { phase in
-                switch phase {
-                case .success(let image):
-                    image.resizable().scaledToFill()
-                default:
-                    ZStack {
-                        Color.secondary.opacity(0.12)
-                        Image(systemName: "book.closed")
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .frame(width: 58, height: 78)
-            .clipShape(RoundedRectangle(cornerRadius: 6))
+            CoverView(url: item.coverURL, width: 58, height: 78)
 
             VStack(alignment: .leading, spacing: 5) {
                 Text(item.name)

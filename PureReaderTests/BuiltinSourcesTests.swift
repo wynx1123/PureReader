@@ -26,12 +26,12 @@ final class BuiltinSourcesTests: XCTestCase {
 
         let result = try BookSourceImporter.importJSON(try bundledData(), into: context)
 
-        XCTAssertEqual(result.changed, 18, "内置书源数量应为 18")
+        XCTAssertEqual(result.changed, 3, "内置书源数量应为 3")
         XCTAssertEqual(result.disabled, 0, "精选内置书源不应有任何因兼容性被停用")
-        XCTAssertEqual(result.enabled, 18)
+        XCTAssertEqual(result.enabled, 3)
 
         let imported = try context.fetch(FetchDescriptor<BookSource>())
-        XCTAssertEqual(imported.count, 18)
+        XCTAssertEqual(imported.count, 3)
         XCTAssertTrue(imported.allSatisfy(\.enabled), "内置书源导入后应全部启用")
         XCTAssertTrue(imported.allSatisfy { !$0.searchURL.isEmpty })
         XCTAssertTrue(imported.allSatisfy { !$0.groupName.isEmpty })
@@ -63,6 +63,6 @@ final class BuiltinSourcesTests: XCTestCase {
         _ = try BookSourceImporter.importJSON(data, into: context)
 
         let imported = try context.fetch(FetchDescriptor<BookSource>())
-        XCTAssertEqual(imported.count, 18, "重复导入不应产生重复书源")
+        XCTAssertEqual(imported.count, 3, "重复导入不应产生重复书源")
     }
 }

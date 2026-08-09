@@ -29,6 +29,11 @@ struct BookSourceManagerView: View {
             List {
                 Section {
                     Button {
+                        importBuiltinSources()
+                    } label: {
+                        Label(String(localized: "安装内置书源"), systemImage: "shippingbox")
+                    }
+                    Button {
                         showImporter = true
                     } label: {
                         Label(String(localized: "从文件导入 JSON"), systemImage: "doc.badge.plus")
@@ -208,6 +213,15 @@ struct BookSourceManagerView: View {
             } label: {
                 Label(String(localized: "删除"), systemImage: "trash")
             }
+        }
+    }
+
+    private func importBuiltinSources() {
+        do {
+            let outcome = try BookSourceImporter.importBuiltinSources(into: modelContext)
+            message = outcome.message
+        } catch {
+            message = error.localizedDescription
         }
     }
 

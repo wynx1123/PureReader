@@ -315,50 +315,34 @@ enum BookSourceImporter {
         return try JSONSerialization.data(withJSONObject: payloads, options: [.prettyPrinted, .sortedKeys])
     }
 
-    /// 内置示例书源（演示规则结构；站点可用性不保证）
+    /// 内置书源：从 App Bundle 的 BuiltinSources.json 导入。
+    ///
+    /// 内置合集来自社区公开书源，仅保留 PureReader 规则引擎兼容的
+    /// （CSS / JSONPath，无 JS / XPath / WebView）且搜索-目录-正文链路完整的源。
+    /// 首次启动自动播种；书源管理里也可随时重新导入。
+    @MainActor
     static func seedBuiltInIfNeeded(context: ModelContext) {
         let descriptor = FetchDescriptor<BookSource>()
         let existing = (try? context.fetch(descriptor)) ?? []
         if !existing.isEmpty { return }
 
-        // PureReader 演示书源：指向本地可解析的静态 HTML 模板风格规则
-        // 实际用户可导入社区 JSON
-        let demo = BookSource(
-            name: String(localized: "示例书源（需自行导入可用源）"),
-            groupName: String(localized: "内置"),
-            searchURL: "https://www.example.com/search?q={{key}}&page={{page}}",
-            bookURL: "",
-            tocURL: "",
-            contentURL: "",
-            rules: ParseRule(
-                bookList: "div.book-item",
-                name: "h3@text||a@text",
-                author: "span.author@text",
-                intro: "p.intro@text",
-                coverUrl: "img@src",
-                bookUrl: "a@href",
-                tocUrl: nil,
-                chapterList: "ul.chapters li",
-                chapterName: "a@text",
-                chapterUrl: "a@href",
-                content: "div#content@text||div.content@text",
-                nextPage: nil,
-                replaceRegex: nil
-            ),
-            enabled: false,
-            format: .pureReader,
-            comment: String(localized: "占位示例，默认禁用。请从社区导入可用书源。"),
-            weight: 0
-        )
-        context.insert(demo)
         do {
-            try context.save()
+            _ = try importBuiltinSources(into: context)
         } catch {
-            context.delete(demo)
-            // Demo installation is optional, but persistence failures must remain
-            // visible to diagnostics instead of being silently swallowed.
-            assertionFailure("Failed to persist demo book source: \(error)")
+            // 播种失败不应静默：本地资源 + 规则已筛选，失败通常是引擎/模型回归。
+            assertionFailure("Failed to seed built-in book sources: \(error)")
         }
+    }
+
+    /// 导入内置书源合集。可重复调用：按站点 URL 去重并更新已有书源，不产生重复项。
+    @MainActor
+    @discardableResult
+    static func importBuiltinSources(into context: ModelContext) throws -> ImportResult {
+        guard let url = Bundle.main.url(forResource: "BuiltinSources", withExtension: "json"),
+              let data = try? Data(contentsOf: url) else {
+            throw ImportError.builtinMissing
+        }
+        return try importJSON(data, into: context)
     }
 
     // MARK: - Parse one
@@ -648,6 +632,7 @@ enum BookSourceImporter {
         case emptyResponse
         case responseTooLarge
         case downloadFailed(String)
+        case builtinMissing
 
         var errorDescription: String? {
             switch self {
@@ -667,6 +652,8 @@ enum BookSourceImporter {
                 return String(localized: "书源文件超过 10 MB，已停止导入")
             case .downloadFailed(let message):
                 return String(localized: "书源下载失败：\(message)")
+            case .builtinMissing:
+                return String(localized: "未找到内置书源资源，请重新安装 App")
             }
         }
     }

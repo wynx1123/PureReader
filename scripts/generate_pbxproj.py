@@ -71,6 +71,16 @@ def main(output: Path = OUT) -> None:
         bf = uid(f"BF:{rel}")
         file_entries.append((name, p.relative_to(SRC), fr, bf))
 
+    # Non-asset resources (JSON etc.) bundled into the app bundle.
+    # Assets.xcassets is handled separately below.
+    resources_dir = SRC / "Resources"
+    resource_entries: list[tuple[str, str, str]] = []  # name, file_ref, build_file
+    if resources_dir.is_dir():
+        for p in sorted(resources_dir.iterdir()):
+            if p.name == "Assets.xcassets" or not p.is_file():
+                continue
+            resource_entries.append((p.name, uid(f"RES_FR:{p.name}"), uid(f"RES_BF:{p.name}")))
+
     test_entries: list[tuple[str, Path, str, str]] = []
     for p in test_files:
         rel = p.relative_to(TESTS).as_posix()
@@ -95,6 +105,8 @@ def main(output: Path = OUT) -> None:
         w(f"\t\t{bf} /* {name} in Sources */ = {{isa = PBXBuildFile; fileRef = {fr} /* {name} */; }};")
     for name, rel, fr, bf in test_entries:
         w(f"\t\t{bf} /* {name} in Sources */ = {{isa = PBXBuildFile; fileRef = {fr} /* {name} */; }};")
+    for name, fr, bf in resource_entries:
+        w(f"\t\t{bf} /* {name} in Resources */ = {{isa = PBXBuildFile; fileRef = {fr} /* {name} */; }};")
     w(f"\t\t{assets_bf} /* Assets.xcassets in Resources */ = {{isa = PBXBuildFile; fileRef = {assets_fr} /* Assets.xcassets */; }};")
     w("/* End PBXBuildFile section */")
 
@@ -111,6 +123,11 @@ def main(output: Path = OUT) -> None:
         )
     for name, rel, fr, bf in test_entries:
         w(f'\t\t{fr} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = {name}; sourceTree = "<group>"; }};')
+    for name, fr, bf in resource_entries:
+        filetype = "text.json" if name.lower().endswith(".json") else "file.text"
+        w(
+            f'\t\t{fr} /* {name} */ = {{isa = PBXFileReference; lastKnownFileType = {filetype}; path = {name}; sourceTree = "<group>"; }};'
+        )
     w(
         f'\t\t{assets_fr} /* Assets.xcassets */ = {{isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; }};'
     )
@@ -146,6 +163,8 @@ def main(output: Path = OUT) -> None:
     # Assets under Resources
     ensure_dir("Resources")
     dir_to_children["Resources"].append((assets_fr, "Assets.xcassets", False))
+    for name, fr, bf in resource_entries:
+        dir_to_children["Resources"].append((fr, name, False))
 
     w("/* Begin PBXGroup section */")
     # Main group
@@ -314,6 +333,8 @@ def main(output: Path = OUT) -> None:
     w("\t\t\tisa = PBXResourcesBuildPhase;")
     w("\t\t\tbuildActionMask = 2147483647;")
     w("\t\t\tfiles = (")
+    for name, fr, bf in resource_entries:
+        w(f"\t\t\t\t{bf} /* {name} in Resources */,")
     w(f"\t\t\t\t{assets_bf} /* Assets.xcassets in Resources */,")
     w("\t\t\t);")
     w("\t\t\trunOnlyForDeploymentPostprocessing = 0;")

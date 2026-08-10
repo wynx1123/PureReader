@@ -412,180 +412,34 @@ enum BookSourceImporter {
         return try JSONSerialization.data(withJSONObject: payloads, options: [.prettyPrinted, .sortedKeys])
     }
 
-    /// 首次启动时植入经过测试的内置书源，同时清理旧版占位源。
+    /// 内置书源：从 App Bundle 的 BuiltinSources.json 导入。
     ///
-    /// 内置源使用 PureReader 原生 CSS 规则，不依赖 JavaScript。
-    /// 站点可用性随时间变化，用户可在书源管理中一键检测全部。
-    ///
-    /// 添加规则：每个内置源必须经过真实浏览器四步验证：
-    ///   首页可访问 → 搜索出结果 → 目录可解析 → 正文无 Cloudflare
-    /// 未验证的源不可内置。
-    ///
-    /// 迁移策略：每个内置源有稳定的 builtInKey，基于此 key 判断是否已存在。
-    /// 旧 example.com 占位源会被自动清理。
+    /// 内置合集来自社区公开书源，仅保留 PureReader 规则引擎兼容的
+    /// （CSS / JSONPath，无 JS / XPath / WebView）且搜索-目录-正文链路完整的源。
+    /// 首次启动自动播种；书源管理里也可随时重新导入。
+    @MainActor
     static func seedBuiltInIfNeeded(context: ModelContext) {
         let descriptor = FetchDescriptor<BookSource>()
-        let existing: [BookSource]
+        let existing = (try? context.fetch(descriptor)) ?? []
+        if !existing.isEmpty { return }
+
         do {
-            existing = try context.fetch(descriptor)
+            _ = try importBuiltinSources(into: context)
         } catch {
-            Logger.bookSource.error("Failed to fetch existing sources during seed: \(error.localizedDescription)")
-            return
-        }
-
-        // 清理旧版 example.com 占位源
-        let legacyDemos = existing.filter {
-            $0.searchURL.contains("www.example.com/search")
-        }
-        for source in legacyDemos {
-            context.delete(source)
-        }
-
-        // 内置源定义：stable key → 构造工厂
-        let builtInDefinitions: [(key: String, factory: () -> BookSource)] = [
-            (
-                "alicesw",
-                {
-                    BookSource(
-                        name: "爱丽丝书屋",
-                        groupName: String(localized: "内置"),
-                        searchURL: "https://www.alicesw.com/search.html?q={{key}}&f=_all",
-                        exploreURL: "推荐::https://www.alicesw.com/all/order/update_time+desc.html"
-                            + "&&排行::https://www.alicesw.com/other/rank_hits/order/hits.html"
-                            + "&&原创::https://www.alicesw.com/original.html",
-                        bookURL: "https://www.alicesw.com",
-                        tocURL: "https://www.alicesw.com/other/chapters/id/{{bookID}}.html",
-                        rules: ParseRule(
-                            bookList: "div.list-group-item",
-                            name: "h5 a@text##^\\s*\\d+\\.\\s*##",
-                            author: "p.mb-1 a@text",
-                            intro: "p.content-txt@text",
-                            coverUrl: "img.lazyload_book_cover@data-src||img.lazyload_book_cover@src",
-                            bookUrl: "h5 a@href",
-                            chapterList: "ul.mulu_list li",
-                            chapterName: "a@text",
-                            chapterUrl: "a@href",
-                            content: "div.content_txt@text"
-                        ),
-                        exploreRules: ParseRule(
-                            bookList: "ul.txt-list li",
-                            name: "span.s2 a@text##^\\s*\\[[^]]+\\]\\s*##",
-                            bookUrl: "span.s2 a@href"
-                        ),
-                        enabled: true,
-                        format: .pureReader,
-                        comment: String(localized: "内置书源，已于 2026-07-31 通过搜索→目录→正文及发现页全链路验证。"),
-                        weight: 100
-                    )
-                }
-            ),
-            (
-                "qbtr",
-                {
-                    BookSource(
-                        name: "全本同人小说",
-                        groupName: String(localized: "内置"),
-                        searchURL: "https://www.qbtr.org/e/search/index.php,"
-                            + "{\"method\":\"POST\",\"body\":\"keyboard={{key}}&show=title&classid=0\",\"charset\":\"gb2312\"}",
-                        exploreURL: "推荐::https://www.qbtr.org/changgui/"
-                            + "&&同人::https://www.qbtr.org/tongren/"
-                            + "&&热门::https://www.qbtr.org/hot/",
-                        bookURL: "https://www.qbtr.org",
-                        rules: ParseRule(
-                            bookList: "div.bk",
-                            name: "h3@text",
-                            author: "div.booknews@text##^作者[:：]\\s*(.*?)(?:\\s+\\d+(?:\\.\\d+)?\\s*MB)?\\s+\\d{4}-\\d{2}-\\d{2}$##$1",
-                            intro: "p@text",
-                            bookUrl: "a@href",
-                            chapterList: "div.book_list ul li",
-                            chapterName: "a@text",
-                            chapterUrl: "a@href",
-                            content: "div.read_chapterDetail@text",
-                            replaceRegex: "(?s)^.*?(?=第[零〇一二三四五六七八九十百千万两0-9]+[章节回][：:])##"
-                        ),
-                        exploreRules: ParseRule(
-                            bookList: "div.bk",
-                            name: "h3@text",
-                            author: "div.booknews@text##^作者[:：]\\s*(.*?)(?:\\s+\\d+(?:\\.\\d+)?\\s*MB)?\\s+\\d{4}-\\d{2}-\\d{2}$##$1",
-                            intro: "p@text",
-                            bookUrl: "a@href"
-                        ),
-                        enabled: true,
-                        format: .pureReader,
-                        comment: String(localized: "内置书源，已于 2026-07-31 通过搜索→目录→正文及发现页全链路验证。搜索为 POST + GB2312 编码。"),
-                        weight: 80
-                    )
-                }
-            )
-        ]
-
-        // 内置源规则属于应用配置，需要随版本修复；但保留用户手动启用/停用状态。
-        var insertedCount = 0
-        var updatedCount = 0
-        for (key, factory) in builtInDefinitions {
-            let definition = factory()
-            let current = existing.first { source in
-                source.name == builtInName(for: key) || matchesBuiltInIdentity(source, key: key)
-            }
-            if let current {
-                guard !hasSameBuiltInConfiguration(current, definition) else { continue }
-                let wasEnabled = current.enabled
-                update(current, from: definition)
-                current.enabled = wasEnabled
-                updatedCount += 1
-            } else {
-                context.insert(definition)
-                insertedCount += 1
-            }
-        }
-
-        if insertedCount > 0 || updatedCount > 0 || !legacyDemos.isEmpty {
-            do {
-                try context.save()
-                Logger.bookSource.info(
-                    "Reconciled built-in book sources: inserted=\(insertedCount), updated=\(updatedCount)"
-                )
-            } catch {
-                context.rollback()
-                Logger.bookSource.error("Failed to persist built-in book sources: \(error.localizedDescription)")
-                assertionFailure("Failed to persist built-in book sources: \(error)")
-            }
+            // 播种失败不应静默：本地资源 + 规则已筛选，失败通常是引擎/模型回归。
+            assertionFailure("Failed to seed built-in book sources: \(error)")
         }
     }
 
-    private static func matchesBuiltInIdentity(_ source: BookSource, key: String) -> Bool {
-        let urls = [source.searchURL, source.exploreURL, source.bookURL]
-            .joined(separator: " ")
-            .lowercased()
-        switch key {
-        case "alicesw": return urls.contains("alicesw.com")
-        case "qbtr": return urls.contains("qbtr.cc") || urls.contains("qbtr.org")
-        default: return false
+    /// 导入内置书源合集。可重复调用：按站点 URL 去重并更新已有书源，不产生重复项。
+    @MainActor
+    @discardableResult
+    static func importBuiltinSources(into context: ModelContext) throws -> ImportResult {
+        guard let url = Bundle.main.url(forResource: "BuiltinSources", withExtension: "json"),
+              let data = try? Data(contentsOf: url) else {
+            throw ImportError.builtinMissing
         }
-    }
-
-    private static func hasSameBuiltInConfiguration(_ lhs: BookSource, _ rhs: BookSource) -> Bool {
-        lhs.name == rhs.name
-            && lhs.groupName == rhs.groupName
-            && lhs.searchURL == rhs.searchURL
-            && lhs.exploreURL == rhs.exploreURL
-            && lhs.bookURL == rhs.bookURL
-            && lhs.tocURL == rhs.tocURL
-            && lhs.contentURL == rhs.contentURL
-            && lhs.headerJSON == rhs.headerJSON
-            && lhs.ruleJSON == rhs.ruleJSON
-            && lhs.exploreRuleJSON == rhs.exploreRuleJSON
-            && lhs.formatRaw == rhs.formatRaw
-            && lhs.weight == rhs.weight
-    }
-
-    /// 内置源 key → display name 映射
-    private static func builtInName(for key: String) -> String {
-        switch key {
-        case "alicesw": return "爱丽丝书屋"
-        case "qbtr": return "全本同人小说"
-        default: return key
-        }
+        return try importJSON(data, into: context)
     }
 
     // MARK: - Parse one
@@ -890,6 +744,7 @@ enum BookSourceImporter {
         case emptyResponse
         case responseTooLarge
         case downloadFailed(String)
+        case builtinMissing
 
         var errorDescription: String? {
             switch self {
@@ -909,6 +764,8 @@ enum BookSourceImporter {
                 return String(localized: "书源文件超过 10 MB，已停止导入")
             case .downloadFailed(let message):
                 return String(localized: "书源下载失败：\(message)")
+            case .builtinMissing:
+                return String(localized: "未找到内置书源资源，请重新安装 App")
             }
         }
     }

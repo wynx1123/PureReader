@@ -11,6 +11,11 @@ struct MainTabView: View {
                     Label(String(localized: "图书"), systemImage: "books.vertical.fill")
                 }
 
+            HistoryView()
+                .tabItem {
+                    Label(String(localized: "历史"), systemImage: "clock.arrow.circlepath")
+                }
+
             DiscoveryView()
                 .tabItem {
                     Label(String(localized: "发现"), systemImage: "magnifyingglass")

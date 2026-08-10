@@ -1,0 +1,98 @@
+[
+  {
+    "bookSourceName": "穿越小说",
+    "bookSourceGroup": "内置书源",
+    "bookSourceUrl": "http://www.kk169.net",
+    "bookSourceType": 0,
+    "searchUrl": "http://www.kk169.net/modules/article/search.php?q={{key}}",
+    "exploreUrl": "",
+    "enabled": true,
+    "customOrder": 1,
+    "ruleSearch": {
+      "author": "class.c_value@text",
+      "bookList": "div.c_row",
+      "bookUrl": ".c_subject a@href",
+      "coverUrl": "img@src",
+      "intro": "div.c_description@text",
+      "name": ".c_subject a@text"
+    },
+    "ruleBookInfo": {
+      "author": "",
+      "intro": "",
+      "tocUrl": "a.b_hot@href"
+    },
+    "ruleToc": {
+      "chapterList": "li.chapter",
+      "chapterName": "a@text",
+      "chapterUrl": "a@href"
+    },
+    "ruleContent": {
+      "content": "div.acontent@textNodes##穿越小说推荐各位书友阅读：[^\\n]*",
+      "replaceRegex": "^第[0-9]+章[^\\n]*\\n##@@穿越小说 [a-zA-Z0-9]+\\.[a-zA-Z0-9]+\\.[a-zA-Z0-9]+##@@如果您中途有事离开[^\\n]*##"
+    }
+  },
+  {
+    "bookSourceName": "去读书",
+    "bookSourceGroup": "内置书源",
+    "bookSourceUrl": "http://www.qudushu.org",
+    "bookSourceType": 0,
+    "searchUrl": "http://www.qudushu.org/modules/article/search.php?q={{key}}",
+    "exploreUrl": "",
+    "enabled": true,
+    "customOrder": 2,
+    "ruleSearch": {
+      "author": "class.c_value@text",
+      "bookList": "id.jieqi_page_contents@class.c_row",
+      "bookUrl": "class.c_subject@a@href",
+      "coverUrl": "img@src",
+      "intro": "class.c_intro@text",
+      "name": "class.c_subject@a@text"
+    },
+    "ruleBookInfo": {
+      "author": "",
+      "intro": "",
+      "tocUrl": "a.b_hot@href"
+    },
+    "ruleToc": {
+      "chapterList": "li.chapter",
+      "chapterName": "a@text",
+      "chapterUrl": "a@href"
+    },
+    "ruleContent": {
+      "content": "id.acontent@textNodes",
+      "replaceRegex": "^第[0-9]+章[^\\n]*\\n##@@去读书推荐各位书友阅读：[^\\n]*\\n##@@去读书 [a-zA-Z0-9]+\\.[a-zA-Z0-9]+\\.[a-zA-Z0-9]+##@@如果您中途有事离开[^\\n]*##"
+    }
+  },
+  {
+    "bookSourceName": "话本小说",
+    "bookSourceGroup": "内置书源",
+    "bookSourceUrl": "http://www.ihuaben.com",
+    "bookSourceType": 0,
+    "searchUrl": "http://so.ihuaben.com/search?keyword={{key}}&page={{page}}",
+    "exploreUrl": "",
+    "enabled": true,
+    "customOrder": 3,
+    "ruleSearch": {
+      "author": "p.text-muted a@text",
+      "bookList": "div.searchresult",
+      "bookUrl": "h2 a@href",
+      "coverUrl": "img.img-rounded@src",
+      "intro": "class.searchresult-info@tag.p@tag.a@text",
+      "name": "h2 a@text"
+    },
+    "ruleBookInfo": {
+      "author": "",
+      "intro": "",
+      "tocUrl": "##href=\"([^\"]*list/[0-9]+\\.html)\"##"
+    },
+    "ruleToc": {
+      "chapterList": "div.chapter-row a",
+      "chapterName": "a@text",
+      "chapterUrl": "a@href"
+    },
+    "ruleContent": {
+      "content": "id.contentsource@textNodes",
+      "replaceRegex": ""
+    }
+  }
+]

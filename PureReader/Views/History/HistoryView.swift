@@ -75,6 +75,26 @@ struct HistoryView: View {
                                 viewModel.errorMessage = error.localizedDescription
                             }
                         },
+                        onDownload: {
+                            do {
+                                let sources = try modelContext.fetch(FetchDescriptor<BookSource>())
+                                let source = sources.first { $0.id == book.bookSourceID }
+                                    ?? sources.first { $0.name == book.sourceName }
+                                guard let source else { throw OnlineLibraryError.sourceMissing }
+                                let chapters = (book.chapters ?? []).sorted { $0.index < $1.index }
+                                DownloadManager.shared.enqueue(
+                                    book: book,
+                                    chapters: chapters,
+                                    source: BookSourceSnapshot(source),
+                                    kind: .wholeBook,
+                                    startIndex: 0,
+                                    endIndex: max(0, book.totalChapters - 1),
+                                    context: modelContext
+                                )
+                            } catch {
+                                viewModel.errorMessage = error.localizedDescription
+                            }
+                        },
                         onDelete: { removeFromHistory(book) }
                     )
                 }

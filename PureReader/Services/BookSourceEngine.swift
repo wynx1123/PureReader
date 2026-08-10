@@ -35,6 +35,7 @@ struct BookSourceSnapshot: Sendable {
     var headerJSON: String
     var rules: ParseRule
     var exploreRules: ParseRule
+    var weight: Int
 
     @MainActor
     init(_ source: BookSource) {
@@ -48,6 +49,7 @@ struct BookSourceSnapshot: Sendable {
         headerJSON = source.headerJSON
         rules = source.rules
         exploreRules = source.exploreRules
+        weight = source.weight
     }
 }
 
@@ -174,6 +176,14 @@ enum BookSourceEngine {
         source: BookSourceSnapshot,
         page: Int
     ) async throws -> [SourceSearchResult] {
+        if let adapter = nativeAdapter(for: source) {
+            return try await searchNative(
+                keyword: keyword,
+                source: source,
+                adapter: adapter,
+                page: page
+            )
+        }
         guard let request = makeSearchRequest(
             raw: source.searchURL,
             baseURL: source.bookURL,
@@ -250,6 +260,620 @@ enum BookSourceEngine {
             ))
         }
         return out
+    }
+
+    // MARK: - Native adapters
+
+    private struct NativeChapterRecord: Sendable {
+        var id: String
+        var title: String
+        var url: String
+    }
+
+    private static func nativeAdapter(for source: BookSourceSnapshot) -> NativeBookSourceAdapter? {
+        NativeBookSourceAdapter.detect(name: source.name, bookSourceURL: source.bookURL)
+    }
+
+    private static func searchNative(
+        keyword: String,
+        source: BookSourceSnapshot,
+        adapter: NativeBookSourceAdapter,
+        page: Int
+    ) async throws -> [SourceSearchResult] {
+        let url: URL
+        let listPaths: [[String]]
+        switch adapter {
+        case .pixivNovel:
+            url = try nativeURL(
+                base: adapter.baseURL,
+                path: "/ajax/search/novels/\(keyword)",
+                queryItems: [
+                    URLQueryItem(name: "word", value: keyword),
+                    URLQueryItem(name: "order", value: "date_d"),
+                    URLQueryItem(name: "mode", value: "all"),
+                    URLQueryItem(name: "p", value: String(max(1, page))),
+                    URLQueryItem(name: "s_mode", value: "s_tag"),
+                    URLQueryItem(name: "lang", value: "zh")
+                ]
+            )
+            listPaths = [["body", "novel", "data"]]
+        case .linpx:
+            url = try nativeURL(
+                base: adapter.baseURL,
+                path: "/pixiv/search/novel/\(keyword)/cache",
+                queryItems: [URLQueryItem(name: "page", value: String(max(1, page)))]
+            )
+            listPaths = [["novels"], ["data", "novels"], ["data"]]
+        case .furryNovel:
+            url = try nativeURL(
+                base: adapter.baseURL,
+                path: "/api/zh/novel",
+                queryItems: [
+                    URLQueryItem(name: "page", value: String(max(1, page))),
+                    URLQueryItem(name: "order_by", value: "popular"),
+                    URLQueryItem(name: "keyword", value: keyword)
+                ]
+            )
+            listPaths = [["data"], ["novels"], ["data", "novels"]]
+        }
+
+        let body = try await fetchNativeString(url: url, source: source, adapter: adapter)
+        guard let root = nativeJSONObject(from: body) else {
+            throw BookSourceError.invalidResponse
+        }
+        if nativeBool(at: ["error"], in: root) == true {
+            throw BookSourceError.invalidResponse
+        }
+        guard let entries = nativeFirstArray(paths: listPaths, in: root) else {
+            return []
+        }
+
+        var results: [SourceSearchResult] = []
+        var seen = Set<String>()
+        for entry in entries.prefix(30) {
+            guard let object = entry as? [String: Any],
+                  let id = nativeString(
+                    keys: ["id", "novelId", "novel_id", "source_id", "sourceId"],
+                    in: object
+                  ),
+                  !id.isEmpty else { continue }
+            let title = nativeString(keys: ["title", "name", "novelName"], in: object) ?? ""
+            guard !title.isEmpty, seen.insert(id).inserted else { continue }
+            let author = nativeString(
+                keys: ["userName", "user_name", "author", "authorName", "author_name"],
+                in: object
+            ) ?? ""
+            let intro = nativeString(
+                keys: ["description", "desc", "caption", "intro", "summary"],
+                in: object
+            ) ?? ""
+            let cover = nativeString(
+                keys: ["coverUrl", "cover_url", "cover", "url", "imageUrl", "image_url"],
+                in: object
+            ).flatMap { nativeResolvedURL($0, base: url) }
+            let seriesID = nativeString(
+                keys: ["seriesId", "series_id", "seriesID"],
+                in: object
+            )
+            let bookURL = try nativeBookURL(
+                adapter: adapter,
+                novelID: id,
+                seriesID: seriesID
+            )
+            results.append(SourceSearchResult(
+                name: title,
+                author: author,
+                intro: intro,
+                coverURL: cover,
+                bookURL: bookURL.absoluteString,
+                sourceID: source.id,
+                sourceName: source.name
+            ))
+        }
+        return results
+    }
+
+    private static func fetchNativeTOC(
+        bookURL: String,
+        source: BookSourceSnapshot,
+        adapter: NativeBookSourceAdapter
+    ) async throws -> [SourceChapterItem] {
+        switch adapter {
+        case .pixivNovel:
+            return try await fetchPixivTOC(bookURL: bookURL, source: source)
+        case .linpx:
+            return try await fetchLinpxTOC(bookURL: bookURL, source: source)
+        case .furryNovel:
+            return try await fetchFurryNovelTOC(bookURL: bookURL, source: source)
+        }
+    }
+
+    private static func fetchPixivTOC(
+        bookURL: String,
+        source: BookSourceSnapshot
+    ) async throws -> [SourceChapterItem] {
+        guard let novelID = nativeNovelID(from: bookURL) else {
+            throw BookSourceError.invalidURL
+        }
+        let currentBody = try await fetchPixivDetail(novelID: novelID, source: source)
+        guard let current = nativePixivDetail(from: currentBody) else {
+            throw BookSourceError.invalidResponse
+        }
+
+        let currentTitle = nativeString(keys: ["title"], in: current) ?? String(localized: "正文")
+        var before: [NativeChapterRecord] = []
+        var after: [NativeChapterRecord] = []
+        var seen: Set<String> = [novelID]
+        var cursor = current
+
+        while before.count + after.count < 4_999,
+              let previous = nativeDictionary(at: ["seriesNavData", "prev"], in: cursor),
+              let previousID = nativeString(keys: ["id"], in: previous),
+              !previousID.isEmpty,
+              seen.insert(previousID).inserted {
+            try Task.checkCancellation()
+            let body = try await fetchPixivDetail(novelID: previousID, source: source)
+            guard let detail = nativePixivDetail(from: body) else { break }
+            before.append(NativeChapterRecord(
+                id: previousID,
+                title: nativeString(keys: ["title"], in: detail)
+                    ?? nativeString(keys: ["title"], in: previous)
+                    ?? String(localized: "正文"),
+                url: try nativeBookURL(adapter: .pixivNovel, novelID: previousID).absoluteString
+            ))
+            cursor = detail
+        }
+        before.reverse()
+
+        cursor = current
+        while before.count + after.count < 4_999,
+              let next = nativeDictionary(at: ["seriesNavData", "next"], in: cursor),
+              let nextID = nativeString(keys: ["id"], in: next),
+              !nextID.isEmpty,
+              seen.insert(nextID).inserted {
+            try Task.checkCancellation()
+            let body = try await fetchPixivDetail(novelID: nextID, source: source)
+            guard let detail = nativePixivDetail(from: body) else { break }
+            after.append(NativeChapterRecord(
+                id: nextID,
+                title: nativeString(keys: ["title"], in: detail)
+                    ?? nativeString(keys: ["title"], in: next)
+                    ?? String(localized: "正文"),
+                url: try nativeBookURL(adapter: .pixivNovel, novelID: nextID).absoluteString
+            ))
+            cursor = detail
+        }
+
+        let currentRecord = NativeChapterRecord(
+            id: novelID,
+            title: currentTitle,
+            url: try nativeBookURL(adapter: .pixivNovel, novelID: novelID).absoluteString
+        )
+        return (before + [currentRecord] + after).enumerated().map { offset, item in
+            SourceChapterItem(title: item.title, url: item.url, index: offset)
+        }
+    }
+
+    private static func fetchLinpxTOC(
+        bookURL: String,
+        source: BookSourceSnapshot
+    ) async throws -> [SourceChapterItem] {
+        guard let novelID = nativeNovelID(from: bookURL) else {
+            throw BookSourceError.invalidURL
+        }
+        var seriesID = nativeQueryValue(named: "seriesId", in: bookURL)
+        if seriesID == nil,
+           let detailURL = try? nativeURL(
+            base: NativeBookSourceAdapter.linpx.baseURL,
+            path: "/pixiv/novel/\(novelID)/cache"
+           ),
+           let detailBody = try await optionalNativeString(
+            url: detailURL,
+            source: source,
+            adapter: .linpx
+           ),
+           let root = nativeJSONObject(from: detailBody) {
+            seriesID = nativeFirstString(
+                paths: [["seriesId"], ["series", "id"], ["body", "seriesId"]],
+                in: root
+            )
+        }
+
+        guard let seriesID, !seriesID.isEmpty else {
+            return [SourceChapterItem(
+                title: String(localized: "正文"),
+                url: try nativeBookURL(adapter: .linpx, novelID: novelID).absoluteString,
+                index: 0
+            )]
+        }
+        let url = try nativeURL(
+            base: NativeBookSourceAdapter.linpx.baseURL,
+            path: "/pixiv/series/\(seriesID)/cache"
+        )
+        let body = try await fetchNativeString(url: url, source: source, adapter: .linpx)
+        guard let root = nativeJSONObject(from: body),
+              nativeBool(at: ["error"], in: root) != true else {
+            throw BookSourceError.invalidResponse
+        }
+        let entries = nativeFirstArray(
+            paths: [["novels"], ["data", "novels"], ["body", "novels"]],
+            in: root
+        ) ?? []
+        let chapters = entries.prefix(5_000).compactMap { entry -> NativeChapterRecord? in
+            guard let object = entry as? [String: Any],
+                  let id = nativeString(keys: ["id", "novelId", "novel_id"], in: object),
+                  !id.isEmpty,
+                  let chapterURL = try? nativeBookURL(adapter: .linpx, novelID: id, seriesID: seriesID) else {
+                return nil
+            }
+            return NativeChapterRecord(
+                id: id,
+                title: nativeString(keys: ["title", "name"], in: object) ?? String(localized: "正文"),
+                url: chapterURL.absoluteString
+            )
+        }
+        if chapters.isEmpty {
+            return [SourceChapterItem(
+                title: String(localized: "正文"),
+                url: try nativeBookURL(adapter: .linpx, novelID: novelID, seriesID: seriesID).absoluteString,
+                index: 0
+            )]
+        }
+        return chapters.enumerated().map { offset, item in
+            SourceChapterItem(title: item.title, url: item.url, index: offset)
+        }
+    }
+
+    private static func fetchFurryNovelTOC(
+        bookURL: String,
+        source: BookSourceSnapshot
+    ) async throws -> [SourceChapterItem] {
+        guard let novelID = nativeNovelID(from: bookURL) else {
+            throw BookSourceError.invalidURL
+        }
+        let url = try nativeURL(
+            base: NativeBookSourceAdapter.furryNovel.baseURL,
+            path: "/api/zh/novel/\(novelID)/chapter"
+        )
+        let body = try await fetchNativeString(url: url, source: source, adapter: .furryNovel)
+        guard let root = nativeJSONObject(from: body),
+              nativeBool(at: ["error"], in: root) != true else {
+            throw BookSourceError.invalidResponse
+        }
+        let entries = nativeFirstArray(
+            paths: [["data"], ["chapters"], ["data", "chapters"], ["catalog"]],
+            in: root
+        ) ?? []
+        let chapters = entries.prefix(5_000).compactMap { entry -> NativeChapterRecord? in
+            guard let object = entry as? [String: Any],
+                  let chapterID = nativeString(
+                    keys: ["id", "chapterId", "chapter_id"],
+                    in: object
+                  ),
+                  !chapterID.isEmpty,
+                  let chapterURL = try? nativeURL(
+                    base: NativeBookSourceAdapter.furryNovel.baseURL,
+                    path: "/api/zh/novel/\(novelID)/chapter/\(chapterID)"
+                  ) else { return nil }
+            return NativeChapterRecord(
+                id: chapterID,
+                title: nativeString(keys: ["title", "name", "chapterName"], in: object)
+                    ?? String(localized: "正文"),
+                url: chapterURL.absoluteString
+            )
+        }
+        if chapters.isEmpty {
+            let detailURL = try nativeURL(
+                base: NativeBookSourceAdapter.furryNovel.baseURL,
+                path: "/api/zh/novel/\(novelID)"
+            )
+            return [SourceChapterItem(
+                title: String(localized: "正文"),
+                url: detailURL.absoluteString,
+                index: 0
+            )]
+        }
+        return chapters.enumerated().map { offset, item in
+            SourceChapterItem(title: item.title, url: item.url, index: offset)
+        }
+    }
+
+    private static func fetchNativeContent(
+        chapterURL: String,
+        source: BookSourceSnapshot,
+        adapter: NativeBookSourceAdapter
+    ) async throws -> String {
+        let rawContent: String?
+        switch adapter {
+        case .pixivNovel:
+            guard let novelID = nativeNovelID(from: chapterURL) else {
+                throw BookSourceError.invalidURL
+            }
+            let body = try await fetchPixivDetail(novelID: novelID, source: source)
+            rawContent = nativeJSONObject(from: body).flatMap {
+                nativeFirstString(paths: [["body", "content"], ["content"]], in: $0)
+            }
+        case .linpx:
+            guard let novelID = nativeNovelID(from: chapterURL) else {
+                throw BookSourceError.invalidURL
+            }
+            let linpxURL = try nativeURL(
+                base: NativeBookSourceAdapter.linpx.baseURL,
+                path: "/pixiv/novel/\(novelID)/cache"
+            )
+            var content: String?
+            if let body = try await optionalNativeString(
+                url: linpxURL,
+                source: source,
+                adapter: .linpx
+            ), let root = nativeJSONObject(from: body),
+               nativeBool(at: ["error"], in: root) != true {
+                content = nativeFirstString(
+                    paths: [["content"], ["novel", "content"], ["data", "content"], ["body", "content"]],
+                    in: root
+                )
+            }
+            if content?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+                let pixivBody = try await fetchPixivDetail(novelID: novelID, source: source)
+                content = nativeJSONObject(from: pixivBody).flatMap {
+                    nativeFirstString(paths: [["body", "content"], ["content"]], in: $0)
+                }
+            }
+            rawContent = content
+        case .furryNovel:
+            guard let url = URL(string: chapterURL),
+                  ["http", "https"].contains(url.scheme?.lowercased() ?? "") else {
+                throw BookSourceError.invalidURL
+            }
+            let targetURL: URL
+            if isSameOrigin(url, URL(string: NativeBookSourceAdapter.furryNovel.baseURL)) {
+                targetURL = url
+            } else if let novelID = nativeNovelID(from: chapterURL) {
+                targetURL = try nativeURL(
+                    base: NativeBookSourceAdapter.furryNovel.baseURL,
+                    path: "/api/zh/novel/\(novelID)"
+                )
+            } else {
+                throw BookSourceError.invalidURL
+            }
+            let body = try await fetchNativeString(
+                url: targetURL,
+                source: source,
+                adapter: .furryNovel
+            )
+            rawContent = nativeJSONObject(from: body).flatMap {
+                nativeFirstString(
+                    paths: [
+                        ["content"], ["data", "content"], ["chapter", "content"],
+                        ["data", "chapter", "content"], ["novel", "content"]
+                    ],
+                    in: $0
+                )
+            }
+        }
+
+        guard let rawContent else { throw BookSourceError.empty }
+        let content = nativeCleanContent(rawContent)
+        guard !content.isEmpty else { throw BookSourceError.empty }
+        return content
+    }
+
+    private static func fetchPixivDetail(
+        novelID: String,
+        source: BookSourceSnapshot
+    ) async throws -> String {
+        let url = try nativeURL(
+            base: NativeBookSourceAdapter.pixivNovel.baseURL,
+            path: "/ajax/novel/\(novelID)",
+            queryItems: [URLQueryItem(name: "lang", value: "zh")]
+        )
+        return try await fetchNativeString(url: url, source: source, adapter: .pixivNovel)
+    }
+
+    private static func nativePixivDetail(from body: String) -> [String: Any]? {
+        guard let root = nativeJSONObject(from: body),
+              nativeBool(at: ["error"], in: root) != true else { return nil }
+        return nativeDictionary(at: ["body"], in: root)
+            ?? (root as? [String: Any])
+    }
+
+    private static func fetchNativeString(
+        url: URL,
+        source: BookSourceSnapshot,
+        adapter: NativeBookSourceAdapter
+    ) async throws -> String {
+        // Credentials belong to the imported source origin, not whichever
+        // fallback adapter endpoint happens to be requested. This prevents Linpx
+        // cookies or tokens from being forwarded to Pixiv during content fallback.
+        let trustedURL = trustedSourceURL(source: source, currentBookURL: nil)
+            ?? URL(string: adapter.baseURL)
+        let headers = scopedHeaders(source.headerJSON, target: url, trustedSource: trustedURL)
+        return try await fetchString(url: url, headers: headers)
+    }
+
+    private static func optionalNativeString(
+        url: URL,
+        source: BookSourceSnapshot,
+        adapter: NativeBookSourceAdapter
+    ) async throws -> String? {
+        do {
+            return try await fetchNativeString(url: url, source: source, adapter: adapter)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
+        }
+    }
+
+    private static func nativeURL(
+        base: String,
+        path: String,
+        queryItems: [URLQueryItem] = []
+    ) throws -> URL {
+        guard var components = URLComponents(string: base) else {
+            throw BookSourceError.invalidURL
+        }
+        components.path = path
+        components.queryItems = queryItems.isEmpty ? nil : queryItems
+        guard let url = components.url else { throw BookSourceError.invalidURL }
+        return url
+    }
+
+    private static func nativeBookURL(
+        adapter: NativeBookSourceAdapter,
+        novelID: String,
+        seriesID: String? = nil
+    ) throws -> URL {
+        switch adapter {
+        case .pixivNovel:
+            var items = [URLQueryItem(name: "id", value: novelID)]
+            if let seriesID, !seriesID.isEmpty {
+                items.append(URLQueryItem(name: "seriesId", value: seriesID))
+            }
+            return try nativeURL(
+                base: "https://www.pixiv.net",
+                path: "/novel/show.php",
+                queryItems: items
+            )
+        case .linpx:
+            let items = seriesID.map { [URLQueryItem(name: "seriesId", value: $0)] } ?? []
+            return try nativeURL(
+                base: "https://linpx.ink",
+                path: "/pixiv/novel/\(novelID)",
+                queryItems: items
+            )
+        case .furryNovel:
+            return try nativeURL(
+                base: "https://furrynovel.com",
+                path: "/zh/novel/\(novelID)"
+            )
+        }
+    }
+
+    private static func nativeNovelID(from urlString: String) -> String? {
+        guard let components = URLComponents(string: urlString) else { return nil }
+        let queryNames = ["id", "novelId", "novel_id"]
+        for name in queryNames {
+            if let value = components.queryItems?.first(where: {
+                $0.name.caseInsensitiveCompare(name) == .orderedSame
+            })?.value,
+               !value.isEmpty {
+                return value
+            }
+        }
+        let numericParts = components.path.split(separator: "/").filter {
+            !$0.isEmpty && $0.allSatisfy(\.isNumber)
+        }
+        return numericParts.first.map(String.init)
+    }
+
+    private static func nativeQueryValue(named name: String, in urlString: String) -> String? {
+        URLComponents(string: urlString)?.queryItems?.first {
+            $0.name.caseInsensitiveCompare(name) == .orderedSame
+        }?.value
+    }
+
+    private static func nativeJSONObject(from body: String) -> Any? {
+        guard let data = body.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data)
+    }
+
+    private static func nativeValue(at path: [String], in root: Any) -> Any? {
+        var current: Any? = root
+        for key in path {
+            guard let object = current as? [String: Any] else { return nil }
+            current = object.first {
+                $0.key.caseInsensitiveCompare(key) == .orderedSame
+            }?.value
+        }
+        return current is NSNull ? nil : current
+    }
+
+    private static func nativeDictionary(at path: [String], in root: Any) -> [String: Any]? {
+        nativeValue(at: path, in: root) as? [String: Any]
+    }
+
+    private static func nativeFirstArray(paths: [[String]], in root: Any) -> [Any]? {
+        for path in paths {
+            if let array = nativeValue(at: path, in: root) as? [Any] {
+                return array
+            }
+        }
+        return nil
+    }
+
+    private static func nativeFirstString(paths: [[String]], in root: Any) -> String? {
+        for path in paths {
+            if let value = nativeStringValue(nativeValue(at: path, in: root)), !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private static func nativeString(keys: [String], in object: [String: Any]) -> String? {
+        for key in keys {
+            if let value = object.first(where: {
+                $0.key.caseInsensitiveCompare(key) == .orderedSame
+            })?.value,
+               let string = nativeStringValue(value),
+               !string.isEmpty {
+                return string
+            }
+        }
+        return nil
+    }
+
+    private static func nativeStringValue(_ value: Any?) -> String? {
+        if let string = value as? String {
+            return string.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        if let number = value as? NSNumber {
+            return number.stringValue
+        }
+        return nil
+    }
+
+    private static func nativeBool(at path: [String], in root: Any) -> Bool? {
+        let value = nativeValue(at: path, in: root)
+        if let flag = value as? Bool { return flag }
+        if let number = value as? NSNumber { return number.boolValue }
+        if let text = value as? String {
+            switch text.lowercased() {
+            case "true", "1": return true
+            case "false", "0": return false
+            default: return nil
+            }
+        }
+        return nil
+    }
+
+    private static func nativeResolvedURL(_ raw: String, base: URL) -> String? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        if value.hasPrefix("//") { return (base.scheme ?? "https") + ":" + value }
+        return URL(string: value, relativeTo: base)?.absoluteURL.absoluteString
+    }
+
+    private static func nativeCleanContent(_ raw: String) -> String {
+        var text = raw
+        text = text.replacingOccurrences(
+            of: #"[　 ]*\[newpage\][　 ]*"#,
+            with: "\n\n",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        text = text.replacingOccurrences(
+            of: #"\[chapter:([^\]]*)\]"#,
+            with: "$1\n\n",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        text = text.replacingOccurrences(
+            of: #"\[(?:pixivimage|uploadedimage):[^\]]+\]"#,
+            with: "",
+            options: [.regularExpression, .caseInsensitive]
+        )
+        return RuleParser.stripTags(text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     // MARK: - Discover / categories
@@ -377,11 +1001,26 @@ enum BookSourceEngine {
         bookURL: String,
         source: BookSourceSnapshot
     ) async throws -> [SourceChapterItem] {
+        if let adapter = nativeAdapter(for: source) {
+            return try await fetchNativeTOC(
+                bookURL: bookURL,
+                source: source,
+                adapter: adapter
+            )
+        }
         let rules = source.rules
         var tocURLString = source.tocURL.isEmpty ? bookURL : source.tocURL
         tocURLString = tocURLString
             .replacingOccurrences(of: "{{bookUrl}}", with: bookURL)
             .replacingOccurrences(of: "{bookUrl}", with: bookURL)
+        let bookID = builtInBookID(from: bookURL)
+        if let bookID {
+            tocURLString = tocURLString
+                .replacingOccurrences(of: "{{bookID}}", with: bookID)
+                .replacingOccurrences(of: "{{bookId}}", with: bookID)
+                .replacingOccurrences(of: "{bookID}", with: bookID)
+                .replacingOccurrences(of: "{bookId}", with: bookID)
+        }
         if tocURLString.isEmpty { tocURLString = bookURL }
         guard let url = URL(string: tocURLString) else {
             throw BookSourceError.invalidURL
@@ -399,33 +1038,227 @@ enum BookSourceEngine {
                 url: nextURL,
                 headers: scopedHeaders(source.headerJSON, target: nextURL, trustedSource: trustedURL)
             )
-            return parseChapters(body: body, base: nextURL, rules: rules)
+            return parseBuiltInTOC(body: body, base: nextURL)
+                ?? parseChapters(body: body, base: nextURL, rules: rules)
         }
-        return parseChapters(body: body, base: url, rules: rules)
+        return parseBuiltInTOC(body: body, base: url)
+            ?? parseChapters(body: body, base: url, rules: rules)
+    }
+
+    private static func parseBuiltInTOC(
+        body: String,
+        base: URL
+    ) -> [SourceChapterItem]? {
+        let host = base.host?.lowercased() ?? ""
+        let isQBTR = host == "www.qbtr.org" || host == "qbtr.org"
+        let isAlice = host == "www.alicesw.com" || host == "alicesw.com"
+        guard isQBTR || isAlice else { return nil }
+
+        if isAlice {
+            // Alice's full catalog is a separate page and its chapter URLs do not
+            // share the numeric id used by the book detail URL (some are hashed).
+            // Restrict scanning to .mulu_list, then preserve the site's order.
+            let listPattern = #"<ul\b[^>]*class=["'][^"']*\bmulu_list\b[^"']*["'][^>]*>([\s\S]*?)</ul>"#
+            guard let listRegex = try? NSRegularExpression(pattern: listPattern, options: [.caseInsensitive]),
+                  let listMatch = listRegex.firstMatch(in: body, options: [], range: NSRange(body.startIndex..., in: body)),
+                  let listRange = Range(listMatch.range(at: 1), in: body) else { return nil }
+            let listBody = String(body[listRange])
+            guard let linkRegex = try? NSRegularExpression(
+                pattern: #"<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)</a>"#,
+                options: [.caseInsensitive]
+            ) else { return nil }
+            var items: [SourceChapterItem] = []
+            var seen = Set<String>()
+            for match in linkRegex.matches(in: listBody, options: [], range: NSRange(listBody.startIndex..., in: listBody)) {
+                guard let urlRange = Range(match.range(at: 1), in: listBody),
+                      let titleRange = Range(match.range(at: 2), in: listBody) else { continue }
+                let resolved = RuleParser.resolveURL(String(listBody[urlRange]), base: base)
+                guard let parsed = URL(string: resolved),
+                      ["http", "https"].contains(parsed.scheme?.lowercased() ?? ""),
+                      seen.insert(parsed.absoluteString).inserted else { continue }
+                let title = RuleParser.stripTags(String(listBody[titleRange]))
+                items.append(SourceChapterItem(
+                    title: title.isEmpty ? "第\(items.count + 1)章" : title,
+                    url: parsed.absoluteString,
+                    index: items.count
+                ))
+                if items.count >= 5_000 { break }
+            }
+            return items.isEmpty ? nil : items
+        }
+
+        // QBTR chapter links are numbered but can be emitted in a non-numeric order
+        // by the server. Normalize by chapter number so every book starts at 1.
+        let path = base.path
+        guard let match = try? NSRegularExpression(
+            pattern: #"/(?:tongren|changgui|hot)/([0-9]+)\.html"#,
+            options: [.caseInsensitive]
+        ).firstMatch(in: path, options: [], range: NSRange(path.startIndex..., in: path)),
+        let range = Range(match.range(at: 1), in: path) else { return nil }
+        let bookIDPattern = NSRegularExpression.escapedPattern(for: String(path[range]))
+        let pattern = #"<a\b[^>]*href=["']((?:/)?(?:tongren|changgui|hot)/"#
+            + bookIDPattern
+            + #"/([0-9]+)\.html)["'][^>]*>([\s\S]*?)</a>"#
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
+            return nil
+        }
+        var records: [(number: Int, title: String, url: String)] = []
+        var seen = Set<String>()
+        for item in regex.matches(in: body, options: [], range: NSRange(body.startIndex..., in: body)) {
+            guard let urlRange = Range(item.range(at: 1), in: body),
+                  let numberRange = Range(item.range(at: 2), in: body),
+                  let titleRange = Range(item.range(at: 3), in: body),
+                  let number = Int(body[numberRange]) else { continue }
+            let resolved = RuleParser.resolveURL(String(body[urlRange]), base: base)
+            guard let parsed = URL(string: resolved),
+                  ["http", "https"].contains(parsed.scheme?.lowercased() ?? ""),
+                  seen.insert(parsed.absoluteString).inserted else { continue }
+            let title = RuleParser.stripTags(String(body[titleRange]))
+            records.append((number, title.isEmpty ? "第\(number)章" : title, parsed.absoluteString))
+        }
+        guard !records.isEmpty else { return nil }
+        records.sort { lhs, rhs in lhs.number == rhs.number ? lhs.url < rhs.url : lhs.number < rhs.number }
+        return records.prefix(5_000).enumerated().map { index, item in
+            SourceChapterItem(title: item.title, url: item.url, index: index)
+        }
     }
 
     private static func parseChapters(body: String, base: URL, rules: ParseRule) -> [SourceChapterItem] {
-        let blocks = RuleParser.getStrings(from: body, rule: rules.chapterList, baseURL: base)
+        let blocks = RuleParser.getStrings(
+            from: body,
+            rule: rules.chapterList,
+            baseURL: base,
+            limit: 5_000
+        )
         var items: [SourceChapterItem] = []
         if blocks.isEmpty {
-            let names = RuleParser.getStrings(from: body, rule: rules.chapterName, baseURL: base)
-            let urls = RuleParser.getStrings(from: body, rule: rules.chapterUrl, baseURL: base)
-            for i in 0..<min(urls.count, 5000) {
-                let title = i < names.count ? names[i] : "第\(i + 1)章"
-                var u = urls[i]
+            let names = RuleParser.getStrings(
+                from: body,
+                rule: rules.chapterName,
+                baseURL: base,
+                limit: 5_000
+            )
+            let urls = RuleParser.getStrings(
+                from: body,
+                rule: rules.chapterUrl,
+                baseURL: base,
+                limit: 5_000
+            )
+            var seen = Set<String>()
+            for i in 0..<min(urls.count, 5_000) {
+                let title = i < names.count ? names[i] : "第\(items.count + 1)章"
+                var u = urls[i].trimmingCharacters(in: .whitespacesAndNewlines)
                 if !u.hasPrefix("http") { u = RuleParser.resolveURL(u, base: base) }
-                items.append(SourceChapterItem(title: title, url: u, index: i))
+                guard let parsed = URL(string: u),
+                      ["http", "https"].contains(parsed.scheme?.lowercased() ?? ""),
+                      seen.insert(parsed.absoluteString).inserted else { continue }
+                items.append(SourceChapterItem(title: title, url: parsed.absoluteString, index: items.count))
             }
             return items
         }
-        for (i, block) in blocks.prefix(5000).enumerated() {
-            let title = RuleParser.getString(from: block, rule: rules.chapterName, baseURL: base) ?? "第\(i + 1)章"
+        var seen = Set<String>()
+        for block in blocks.prefix(5_000) {
+            let title = RuleParser.getString(from: block, rule: rules.chapterName, baseURL: base)
+                ?? "第\(items.count + 1)章"
             var u = RuleParser.getString(from: block, rule: rules.chapterUrl, baseURL: base) ?? ""
-            if u.isEmpty { continue }
+            u = u.trimmingCharacters(in: .whitespacesAndNewlines)
             if !u.hasPrefix("http") { u = RuleParser.resolveURL(u, base: base) }
-            items.append(SourceChapterItem(title: title, url: u, index: i))
+            guard let parsed = URL(string: u),
+                  ["http", "https"].contains(parsed.scheme?.lowercased() ?? ""),
+                  seen.insert(parsed.absoluteString).inserted else { continue }
+            items.append(SourceChapterItem(title: title, url: parsed.absoluteString, index: items.count))
         }
         return items
+    }
+
+    private static func builtInBookID(from bookURL: String) -> String? {
+        guard let url = URL(string: bookURL) else { return nil }
+        let path = url.path
+        let patterns = [
+            "/(?:novel|book|id)/([0-9]+)\\.html$",
+            "/(?:novel|book)/([0-9]+)$"
+        ]
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                  let match = regex.firstMatch(in: path, options: [], range: NSRange(path.startIndex..., in: path)),
+                  let range = Range(match.range(at: 1), in: path) else { continue }
+            return String(path[range])
+        }
+        return nil
+    }
+
+    private static func fetchCoverURL(
+        bookURL: String,
+        source: BookSourceSnapshot
+    ) async throws -> String? {
+        guard let url = URL(string: bookURL),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        let body = try await fetchString(
+            url: url,
+            headers: scopedHeaders(
+                source.headerJSON,
+                target: url,
+                trustedSource: trustedSourceURL(source: source, currentBookURL: bookURL)
+            )
+        )
+        if let value = RuleParser.getString(from: body, rule: source.rules.coverUrl, baseURL: url),
+           let resolved = validImageURL(value, base: url) {
+            return resolved
+        }
+        return extractCoverURL(from: body, base: url)
+    }
+
+    private static func extractCoverURL(from body: String, base: URL) -> String? {
+        let metaPattern = #"<meta\b[^>]*(?:property|name)\s*=\s*[\"'](?:og:image|twitter:image)[\"'][^>]*content\s*=\s*[\"']([^\"']+)[\"'][^>]*>"#
+        if let regex = try? NSRegularExpression(pattern: metaPattern, options: [.caseInsensitive]),
+           let match = regex.firstMatch(in: body, options: [], range: NSRange(body.startIndex..., in: body)),
+           let range = Range(match.range(at: 1), in: body),
+           let url = validImageURL(String(body[range]), base: base) {
+            return url
+        }
+        let imagePattern = #"<img\b([^>]*)>"#
+        guard let regex = try? NSRegularExpression(pattern: imagePattern, options: [.caseInsensitive]) else { return nil }
+        var fallback: String?
+        for match in regex.matches(in: body, options: [], range: NSRange(body.startIndex..., in: body)) {
+            let tag = (body as NSString).substring(with: match.range)
+            let preferred = tag.range(of: "cover|fengmian|book", options: [.regularExpression, .caseInsensitive]) != nil
+            for attribute in ["data-src", "data-original", "src"] {
+                let pattern = "\\b" + attribute + "\\s*=\\s*[\"']([^\"']+)[\"']"
+                guard let attrRegex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]),
+                      let attrMatch = attrRegex.firstMatch(in: tag, options: [], range: NSRange(tag.startIndex..., in: tag)),
+                      let range = Range(attrMatch.range(at: 1), in: tag),
+                      let url = validImageURL(String(tag[range]), base: base) else { continue }
+                if preferred { return url }
+                fallback = fallback ?? url
+            }
+        }
+        return fallback
+    }
+
+    private static func validImageURL(_ raw: String, base: URL) -> String? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty,
+              !value.lowercased().hasPrefix("data:"),
+              let url = URL(string: RuleParser.resolveURL(value, base: base)),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+        return url.absoluteString
+    }
+
+    static func parseChaptersForTesting(
+        body: String,
+        base: URL,
+        rules: ParseRule
+    ) -> [SourceChapterItem] {
+        parseBuiltInTOC(body: body, base: base)
+            ?? parseChapters(body: body, base: base, rules: rules)
+    }
+
+    static func extractCoverURLForTesting(body: String, base: URL) -> String? {
+        extractCoverURL(from: body, base: base)
+    }
+
+    static func resolveCoverURL(bookURL: String, source: BookSourceSnapshot) async -> String? {
+        try? await fetchCoverURL(bookURL: bookURL, source: source)
     }
 
     // MARK: - Content
@@ -448,6 +1281,13 @@ enum BookSourceEngine {
         source: BookSourceSnapshot,
         currentBookURL: String? = nil
     ) async throws -> String {
+        if let adapter = nativeAdapter(for: source) {
+            return try await fetchNativeContent(
+                chapterURL: chapterURL,
+                source: source,
+                adapter: adapter
+            )
+        }
         let rules = source.rules
         var urlString = source.contentURL.isEmpty ? chapterURL : source.contentURL
         urlString = urlString
@@ -472,25 +1312,38 @@ enum BookSourceEngine {
 
     // MARK: - Validate source
 
+    private static func effectiveValidationKeyword(
+        for source: BookSourceSnapshot,
+        requested keyword: String
+    ) -> String {
+        // The built-in QBTR endpoint returns an empty page for “推荐”, while
+        // common terms such as “小说” exercise the same GB2312 POST pipeline.
+        if source.name == "全本同人小说", keyword == "推荐" {
+            return "小说"
+        }
+        return keyword
+    }
+
     @MainActor
-    static func validate(_ source: BookSource, keyword: String = "修仙") async -> Bool {
+    static func validate(_ source: BookSource, keyword: String = "推荐") async -> Bool {
         (await validateDetailed(source, keyword: keyword)).isReachable
     }
 
     @MainActor
     static func validateDetailed(
         _ source: BookSource,
-        keyword: String = "修仙"
+        keyword: String = "推荐"
     ) async -> BookSourceValidationResult {
         await validateDetailed(BookSourceSnapshot(source), keyword: keyword)
     }
 
     static func validateDetailed(
         _ source: BookSourceSnapshot,
-        keyword: String = "修仙"
+        keyword: String = "推荐"
     ) async -> BookSourceValidationResult {
         do {
-            let results = try await searchOne(keyword: keyword, source: source, page: 1)
+            let validationKeyword = effectiveValidationKeyword(for: source, requested: keyword)
+            let results = try await searchOne(keyword: validationKeyword, source: source, page: 1)
             if results.isEmpty {
                 return BookSourceValidationResult(
                     isReachable: true,
@@ -510,6 +1363,150 @@ enum BookSourceEngine {
                 message: error.localizedDescription
             )
         }
+    }
+
+    // MARK: - Full health check
+
+    /// 完整健康检测：搜索 → 详情 → 目录 → 正文。
+    @MainActor
+    static func validateFullHealth(
+        _ source: BookSource,
+        keyword: String = "推荐",
+        onStep: @escaping @MainActor (CheckStep, CheckStatus, String?) -> Void
+    ) async -> BookSourceHealthReport {
+        let snapshot = BookSourceSnapshot(source)
+        let startTime = CFAbsoluteTimeGetCurrent()
+        var searchResult = CheckResult(status: .notRun, durationMilliseconds: 0, message: nil)
+        var detailResult = CheckResult(status: .notRun, durationMilliseconds: 0, message: nil)
+        var catalogResult = CheckResult(status: .notRun, durationMilliseconds: 0, message: nil)
+        var contentResult = CheckResult(status: .notRun, durationMilliseconds: 0, message: nil)
+
+        // Step 1: Search
+        await onStep(.search, .running, nil)
+        let searchStart = CFAbsoluteTimeGetCurrent()
+        do {
+            let validationKeyword = effectiveValidationKeyword(for: snapshot, requested: keyword)
+            let results = try await searchOne(keyword: validationKeyword, source: snapshot, page: 1)
+            let duration = Int((CFAbsoluteTimeGetCurrent() - searchStart) * 1000)
+            if results.isEmpty {
+                searchResult = CheckResult(status: .passed, durationMilliseconds: duration, message: String(localized: "搜索成功但无结果"))
+                await onStep(.search, .passed, searchResult.message)
+                detailResult = CheckResult(status: .notRun, durationMilliseconds: 0, message: String(localized: "无搜索结果，未执行"))
+                catalogResult = CheckResult(status: .notRun, durationMilliseconds: 0, message: String(localized: "无搜索结果，未执行"))
+                contentResult = CheckResult(status: .notRun, durationMilliseconds: 0, message: String(localized: "无搜索结果，未执行"))
+                await onStep(.detail, .notRun, detailResult.message)
+                await onStep(.catalog, .notRun, catalogResult.message)
+                await onStep(.content, .notRun, contentResult.message)
+            } else {
+                searchResult = CheckResult(status: .passed, durationMilliseconds: duration, message: String(localized: "\(results.count) 条结果"))
+                await onStep(.search, .passed, searchResult.message)
+
+                // Step 2: Detail page
+                let firstResult = results[0]
+                await onStep(.detail, .running, nil)
+                let detailStart = CFAbsoluteTimeGetCurrent()
+                do {
+                    // 尝试获取书籍详情页
+                    let tocItems = try await fetchTOC(bookURL: firstResult.bookURL, source: snapshot)
+                    let duration = Int((CFAbsoluteTimeGetCurrent() - detailStart) * 1000)
+                    if !tocItems.isEmpty {
+                        detailResult = CheckResult(status: .passed, durationMilliseconds: duration, message: String(localized: "\(tocItems.count) 章"))
+                        await onStep(.detail, .passed, detailResult.message)
+
+                        // Step 3: Catalog (already fetched as TOC)
+                        catalogResult = CheckResult(status: .passed, durationMilliseconds: duration, message: String(localized: "\(tocItems.count) 章"))
+                        await onStep(.catalog, .passed, catalogResult.message)
+
+                        // Step 4: Content
+                        if let firstChapter = tocItems.first {
+                            await onStep(.content, .running, nil)
+                            let contentStart = CFAbsoluteTimeGetCurrent()
+                            do {
+                                let text = try await fetchContent(
+                                    chapterURL: firstChapter.url,
+                                    source: snapshot,
+                                    currentBookURL: firstResult.bookURL
+                                )
+                                let duration = Int((CFAbsoluteTimeGetCurrent() - contentStart) * 1000)
+                                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                                if trimmed.isEmpty {
+                                    contentResult = CheckResult(status: .failed, durationMilliseconds: duration, message: String(localized: "正文为空"))
+                                    await onStep(.content, .failed, contentResult.message)
+                                } else {
+                                    contentResult = CheckResult(status: .passed, durationMilliseconds: duration, message: String(localized: "\(trimmed.count) 字"))
+                                    await onStep(.content, .passed, contentResult.message)
+                                }
+                            } catch let error as BookSourceError where isVerificationError(error) {
+                                let duration = Int((CFAbsoluteTimeGetCurrent() - contentStart) * 1000)
+                                contentResult = CheckResult(status: .verificationRequired, durationMilliseconds: duration, message: error.localizedDescription)
+                                await onStep(.content, .verificationRequired, contentResult.message)
+                            } catch {
+                                let duration = Int((CFAbsoluteTimeGetCurrent() - contentStart) * 1000)
+                                contentResult = CheckResult(status: .failed, durationMilliseconds: duration, message: error.localizedDescription)
+                                await onStep(.content, .failed, contentResult.message)
+                            }
+                        }
+                    } else {
+                        detailResult = CheckResult(status: .failed, durationMilliseconds: duration, message: String(localized: "目录为空"))
+                        await onStep(.detail, .failed, detailResult.message)
+                        catalogResult = CheckResult(status: .failed, durationMilliseconds: 0, message: String(localized: "未执行"))
+                        await onStep(.catalog, .failed, catalogResult.message)
+                        contentResult = CheckResult(status: .failed, durationMilliseconds: 0, message: String(localized: "未执行"))
+                        await onStep(.content, .failed, contentResult.message)
+                    }
+                } catch let error as BookSourceError where isVerificationError(error) {
+                    let duration = Int((CFAbsoluteTimeGetCurrent() - detailStart) * 1000)
+                    detailResult = CheckResult(status: .verificationRequired, durationMilliseconds: duration, message: error.localizedDescription)
+                    await onStep(.detail, .verificationRequired, detailResult.message)
+                    catalogResult = CheckResult(status: .failed, durationMilliseconds: 0, message: String(localized: "未执行"))
+                    await onStep(.catalog, .failed, catalogResult.message)
+                    contentResult = CheckResult(status: .failed, durationMilliseconds: 0, message: String(localized: "未执行"))
+                    await onStep(.content, .failed, contentResult.message)
+                } catch {
+                    let duration = Int((CFAbsoluteTimeGetCurrent() - detailStart) * 1000)
+                    detailResult = CheckResult(status: .failed, durationMilliseconds: duration, message: error.localizedDescription)
+                    await onStep(.detail, .failed, detailResult.message)
+                    catalogResult = CheckResult(status: .failed, durationMilliseconds: 0, message: String(localized: "未执行"))
+                    await onStep(.catalog, .failed, catalogResult.message)
+                    contentResult = CheckResult(status: .failed, durationMilliseconds: 0, message: String(localized: "未执行"))
+                    await onStep(.content, .failed, contentResult.message)
+                }
+            }
+        } catch let error as BookSourceError where isVerificationError(error) {
+            let duration = Int((CFAbsoluteTimeGetCurrent() - searchStart) * 1000)
+            searchResult = CheckResult(status: .verificationRequired, durationMilliseconds: duration, message: error.localizedDescription)
+            await onStep(.search, .verificationRequired, searchResult.message)
+        } catch {
+            let duration = Int((CFAbsoluteTimeGetCurrent() - searchStart) * 1000)
+            searchResult = CheckResult(status: .failed, durationMilliseconds: duration, message: error.localizedDescription)
+            await onStep(.search, .failed, searchResult.message)
+        }
+
+        let totalDuration = Int((CFAbsoluteTimeGetCurrent() - startTime) * 1000)
+        let recommendedAction = BookSourceHealthReport.recommendAction(
+            search: searchResult,
+            detail: detailResult,
+            catalog: catalogResult,
+            content: contentResult
+        )
+
+        return BookSourceHealthReport(
+            sourceID: source.id,
+            checkedAt: Date(),
+            search: searchResult,
+            detail: detailResult,
+            catalog: catalogResult,
+            content: contentResult,
+            totalDurationMilliseconds: totalDuration,
+            recommendedAction: recommendedAction
+        )
+    }
+
+    // MARK: - Helpers
+
+    private static func isVerificationError(_ error: BookSourceError) -> Bool {
+        if case .verificationRequired = error { return true }
+        return false
     }
 
     // MARK: - Network
@@ -833,7 +1830,12 @@ enum BookSourceEngine {
 
         var request = URLRequest(url: url)
         request.httpMethod = options.method
-        for (name, value) in parseHeaders(sourceHeaderJSON) {
+        let trustedURL = URL(string: baseURL)
+        for (name, value) in scopedHeaders(
+            sourceHeaderJSON,
+            target: url,
+            trustedSource: trustedURL
+        ) {
             request.setValue(value, forHTTPHeaderField: name)
         }
         for (name, value) in options.headers {
@@ -1117,6 +2119,7 @@ enum BookSourceError: LocalizedError {
     case httpStatus(Int)
     case empty
     case unsupportedRequest
+    case invalidResponse
     case verificationRequired(URL)
 
     var errorDescription: String? {
@@ -1126,6 +2129,7 @@ enum BookSourceError: LocalizedError {
         case .httpStatus(let c): return String(localized: "HTTP \(c)")
         case .empty: return String(localized: "无结果")
         case .unsupportedRequest: return String(localized: "该书源的请求格式暂不支持")
+        case .invalidResponse: return String(localized: "书源返回的数据格式异常或暂不可用")
         case .verificationRequired: return String(localized: "\u{8be5}\u{4e66}\u{6e90}\u{9700}\u{8981}\u{5148}\u{5b8c}\u{6210}\u{4eba}\u{673a}\u{9a8c}\u{8bc1}")
         }
     }

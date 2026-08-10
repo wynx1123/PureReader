@@ -33,7 +33,6 @@ struct MainTabView: View {
         }
         .tint(.accentColor)
         .onAppear {
-            BookSourceImporter.seedBuiltInIfNeeded(context: modelContext)
             configureTabAppearance()
         }
     }

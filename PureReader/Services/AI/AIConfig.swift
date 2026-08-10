@@ -243,7 +243,12 @@ private func isLocalOrPrivateHost(_ host: String) -> Bool {
 
 enum AIRewriteConstants {
     static let defaultMaxContextTokens = 3000
-    static let llmTimeout: TimeInterval = 60
+    /// Planning should fail fast so a local fallback plan can continue the rewrite.
+    static let planningTimeout: TimeInterval = 15
+    /// Draft generation may be slower for local models, proxies, and long selections.
+    static let llmTimeout: TimeInterval = 180
+    /// Repair is optional; keep it shorter so a usable first draft is not held too long.
+    static let repairTimeout: TimeInterval = 45
     static let maxRewriteHistory = 50
     static let maxLengthDeviation: Double = 0.5
     static let embeddingBatchSize = 16

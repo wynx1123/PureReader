@@ -40,11 +40,20 @@ final class BookshelfViewModel {
     var isCheckingUpdates = false
     var updateStatusMessage: String?
     var onlineOperationError: String?
-    var downloadingBookID: UUID?
-    var downloadCompleted = 0
-    var downloadTotal = 0
-    private var downloadTasks: [UUID: Task<Void, Never>] = [:]
-    private var downloadGenerations: [UUID: UInt64] = [:]
+
+    /// 下载进度（从 DownloadManager 读取，包含运行中和暂停任务）。
+    var downloadingBookID: UUID? {
+        DownloadManager.shared.tasks.first { !$0.isTerminal }?.bookID
+    }
+    var downloadCompleted: Int {
+        DownloadManager.shared.tasks.first { !$0.isTerminal }?.completedCount ?? 0
+    }
+    var downloadTotal: Int {
+        DownloadManager.shared.tasks.first { !$0.isTerminal }?.totalCount ?? 0
+    }
+    var downloadStatus: DownloadTaskStatus? {
+        DownloadManager.shared.tasks.first { !$0.isTerminal }?.status
+    }
 
     func filteredSorted(_ books: [Book]) -> [Book] {
         var list = books
@@ -422,7 +431,7 @@ final class BookshelfViewModel {
 
     func delete(_ book: Book, context: ModelContext) {
         let bookID = book.id
-        invalidateDownloads(for: bookID)
+        DownloadManager.shared.cancelAllForBook(bookID, context: context)
         do {
             try BookImportService.deleteBook(book, context: context)
         } catch {
@@ -454,7 +463,10 @@ final class BookshelfViewModel {
                 fetched: fetched
             )
             let currentID = existing.first(where: { $0.index == book.currentChapterIndex })?.id
-            let previouslyReadIDs = Set(existing.filter { $0.index <= book.highestReadChapterIndex }.map(\.id))
+            let legacyReadBaseline = book.highestReadChapterIndex >= 0
+                ? book.highestReadChapterIndex
+                : max(-1, book.currentChapterIndex - (book.currentPageOffset == 0 ? 1 : 0))
+            let previouslyReadIDs = Set(existing.filter { $0.index <= legacyReadBaseline }.map(\.id))
             let oldUnreadCount = book.unreadChapterCount
             let oldFirstUnread = book.firstUnreadChapterIndex
             let oldTotal = book.totalChapters
@@ -539,7 +551,7 @@ final class BookshelfViewModel {
     }
 
     func downloadCurrentChapter(for book: Book, context: ModelContext) {
-        startDownload(book: book, range: book.currentChapterIndex...book.currentChapterIndex, context: context)
+        enqueueDownload(book: book, kind: .currentChapter, startIndex: book.currentChapterIndex, endIndex: book.currentChapterIndex, context: context)
     }
 
     func downloadNextTwenty(for book: Book, context: ModelContext) {
@@ -549,20 +561,26 @@ final class BookshelfViewModel {
             onlineOperationError = String(localized: "当前章之后没有可下载章节")
             return
         }
-        startDownload(book: book, range: lower...upper, context: context)
+        enqueueDownload(book: book, kind: .nextTwenty, startIndex: lower, endIndex: upper, context: context)
     }
 
     func downloadWholeBook(for book: Book, context: ModelContext) {
-        startDownload(book: book, range: 0...max(0, book.totalChapters - 1), context: context)
+        enqueueDownload(book: book, kind: .wholeBook, startIndex: 0, endIndex: max(0, book.totalChapters - 1), context: context)
     }
 
-    func cancelDownload() {
-        guard let bookID = downloadingBookID else { return }
-        invalidateDownloads(for: bookID)
+    func cancelDownload(for bookID: UUID, context: ModelContext) {
+        DownloadManager.shared.cancelAllForBook(bookID, context: context)
+    }
+
+    func pauseDownload(for bookID: UUID, context: ModelContext) {
+        guard let task = DownloadManager.shared.tasks.first(where: { $0.bookID == bookID && $0.status == .running }) else {
+            return
+        }
+        DownloadManager.shared.pause(taskID: task.id, context: context)
     }
 
     func clearOfflineCache(for book: Book, context: ModelContext) {
-        invalidateDownloads(for: book.id)
+        DownloadManager.shared.cancelAllForBook(book.id, context: context)
         do {
             try OnlineLibraryService.purgeCache(bookID: book.id)
             for chapter in book.chapters ?? [] {
@@ -576,10 +594,16 @@ final class BookshelfViewModel {
         }
     }
 
-    private func startDownload(book: Book, range: ClosedRange<Int>, context: ModelContext) {
-        invalidateDownloads(for: book.id)
+    private func enqueueDownload(
+        book: Book,
+        kind: DownloadTaskKind,
+        startIndex: Int,
+        endIndex: Int,
+        context: ModelContext
+    ) {
         onlineOperationError = nil
-        let chapters = (book.chapters ?? []).sorted { $0.index < $1.index }.filter { range.contains($0.index) }
+        let chapters = (book.chapters ?? []).sorted { $0.index < $1.index }
+            .filter { startIndex...endIndex ~= $0.index }
         guard !chapters.isEmpty else {
             onlineOperationError = String(localized: "没有可下载的章节")
             return
@@ -587,67 +611,16 @@ final class BookshelfViewModel {
         let source: BookSourceSnapshot
         do { source = try sourceSnapshot(for: book, context: context) }
         catch { onlineOperationError = error.localizedDescription; return }
-        downloadingBookID = book.id
-        downloadCompleted = 0
-        downloadTotal = chapters.count
-        let generation = downloadGenerations[book.id, default: 0]
-        let task = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if OnlineLibraryService.generationIsCurrent(
-                    captured: generation,
-                    current: downloadGenerations[book.id, default: 0]
-                ) {
-                    downloadingBookID = nil
-                    downloadTasks[book.id] = nil
-                }
-            }
-            do {
-                // Intentionally serial: predictable load, straightforward cancellation,
-                // and friendly to small community source servers.
-                for chapter in chapters {
-                    try Task.checkCancellation()
-                    guard let chapterURL = chapter.sourceURL,
-                          OnlineLibraryService.stableChapterURL(chapterURL) != nil else {
-                        throw OnlineLibraryError.invalidScheme
-                    }
-                    let text = try await BookSourceEngine.fetchContent(
-                        chapterURL: chapterURL,
-                        source: source,
-                        currentBookURL: book.sourceURL
-                    )
-                    try Task.checkCancellation()
-                    guard OnlineLibraryService.generationIsCurrent(
-                        captured: generation,
-                        current: downloadGenerations[book.id, default: 0]
-                    ) else { throw CancellationError() }
-                    let relative = try OnlineLibraryService.writeCachedText(text, bookID: book.id, chapterID: chapter.id)
-                    guard OnlineLibraryService.generationIsCurrent(
-                        captured: generation,
-                        current: downloadGenerations[book.id, default: 0]
-                    ) else {
-                        try? OnlineLibraryService.removeCachedText(relativePath: relative)
-                        throw CancellationError()
-                    }
-                    chapter.offlineCachePath = relative
-                    chapter.offlineCachedAt = Date()
-                    try context.save()
-                    downloadCompleted += 1
-                }
-                updateStatusMessage = String(localized: "《\(book.title)》离线下载完成")
-            } catch is CancellationError {
-                updateStatusMessage = String(localized: "已取消下载，已完成章节仍可离线阅读")
-            } catch {
-                onlineOperationError = String(localized: "下载到 \(downloadCompleted)/\(downloadTotal) 时失败：\(error.localizedDescription)。可重试同一范围。")
-            }
-        }
-        downloadTasks[book.id] = task
-    }
 
-    private func invalidateDownloads(for bookID: UUID) {
-        downloadGenerations[bookID, default: 0] &+= 1
-        downloadTasks.removeValue(forKey: bookID)?.cancel()
-        if downloadingBookID == bookID { downloadingBookID = nil }
+        DownloadManager.shared.enqueue(
+            book: book,
+            chapters: chapters,
+            source: source,
+            kind: kind,
+            startIndex: startIndex,
+            endIndex: endIndex,
+            context: context
+        )
     }
 
     private func sourceSnapshot(for book: Book, context: ModelContext) throws -> BookSourceSnapshot {

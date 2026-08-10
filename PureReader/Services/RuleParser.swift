@@ -23,11 +23,16 @@ enum RuleParser {
     }
 
     /// 取列表
-    static func getStrings(from content: String, rule: String?, baseURL: URL? = nil) -> [String] {
+    static func getStrings(
+        from content: String,
+        rule: String?,
+        baseURL: URL? = nil,
+        limit: Int = 200
+    ) -> [String] {
         guard let rule, !rule.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return [] }
         let alternatives = rule.components(separatedBy: "||").map { $0.trimmingCharacters(in: .whitespaces) }
         for alt in alternatives {
-            let list = evaluateList(content: content, rule: alt, baseURL: baseURL)
+            let list = evaluateList(content: content, rule: alt, baseURL: baseURL, limit: limit)
             if !list.isEmpty { return list }
         }
         return []
@@ -75,14 +80,19 @@ enum RuleParser {
         return replacement.map { applyInlineReplacement(value, expression: $0) } ?? value
     }
 
-    private static func evaluateList(content: String, rule: String, baseURL: URL?) -> [String] {
+    private static func evaluateList(
+        content: String,
+        rule: String,
+        baseURL: URL?,
+        limit: Int
+    ) -> [String] {
         if rule.hasPrefix("$.") || rule.hasPrefix("$[") {
             return jsonList(content: content, path: rule)
         }
         // 列表规则：先取列表节点，再在每块内取属性
         // 格式：`div.book` 或 `div.book@html` 作为块，由调用方再解析字段
         let (extractionRule, _) = splitExtractionAndReplacement(rule)
-        return cssBlocks(content: content, rule: normalizeLegadoRule(extractionRule))
+        return cssBlocks(content: content, rule: normalizeLegadoRule(extractionRule), limit: limit)
     }
 
     private static func normalizeLegadoRule(_ rule: String) -> String {
@@ -279,9 +289,9 @@ enum RuleParser {
         return extractAttr(from: first, attr: attr, baseURL: baseURL)
     }
 
-    private static func cssBlocks(content: String, rule: String) -> [String] {
+    private static func cssBlocks(content: String, rule: String, limit: Int) -> [String] {
         let (selector, _) = splitSelectorAttr(rule)
-        return matchElements(html: content, selector: selector)
+        return matchElements(html: content, selector: selector, limit: limit)
     }
 
     private static func splitSelectorAttr(_ rule: String) -> (String, String) {
@@ -300,7 +310,7 @@ enum RuleParser {
     /// class/tag 里混进空格后永远匹配不到元素——书源看似启用，搜索却恒为 0 结果。
     /// 这里逐段下钻：先在全文匹配第一段，再在其结果内匹配下一段。
     /// 子代组合符 `>` 退化为后代匹配（正则方案无法区分层级，宁可多匹配）。
-    private static func matchElements(html: String, selector: String) -> [String] {
+    private static func matchElements(html: String, selector: String, limit: Int = 200) -> [String] {
         let normalized = selector
             .replacingOccurrences(of: ">", with: " ")
             .trimmingCharacters(in: .whitespaces)
@@ -309,7 +319,7 @@ enum RuleParser {
             .map(String.init)
         guard !segments.isEmpty else { return [] }
         guard segments.count > 1 else {
-            return matchSimpleElements(html: html, selector: segments[0])
+            return matchSimpleElements(html: html, selector: segments[0], limit: limit)
         }
 
         var current = [html]
@@ -320,12 +330,12 @@ enum RuleParser {
                 // 必须先剥掉外层标签只留内容，否则在其中搜同名标签时，
                 // 正则的 `</\1>` 会先闭合到外层元素自己（`.list li` 里的 ul 命中 ul）。
                 let haystack = offset == 0 ? scope : innerHTML(of: scope)
-                next.append(contentsOf: matchSimpleElements(html: haystack, selector: segment))
-                if next.count >= 200 { break }
+                next.append(contentsOf: matchSimpleElements(html: haystack, selector: segment, limit: limit))
+                if next.count >= limit { break }
             }
             // 某一段匹配不到就整体失败，避免把上一层的结果当成最终结果返回。
             if next.isEmpty { return [] }
-            current = Array(next.prefix(200))
+            current = Array(next.prefix(limit))
         }
         return current
     }
@@ -375,7 +385,7 @@ enum RuleParser {
         return nil
     }
 
-    private static func matchSimpleElements(html: String, selector: String) -> [String] {
+    private static func matchSimpleElements(html: String, selector: String, limit: Int) -> [String] {
         // Support: tag, tag.class, tag#id, .class, #id, tag[attr=value]
         var sel = selector.trimmingCharacters(in: .whitespaces)
         // jsoup 伪类（:contains(...)、:eq(0)、:not(...)）本引擎不支持。
@@ -450,7 +460,7 @@ enum RuleParser {
             } else {
                 continue
             }
-            if results.count >= 200 { break }
+            if results.count >= limit { break }
         }
         // also self-closing tags for img etc when attr only
         if results.isEmpty {
@@ -460,7 +470,7 @@ enum RuleParser {
                     if let full = Range(m.range, in: html) {
                         results.append(String(html[full]))
                     }
-                    if results.count >= 50 { break }
+                    if results.count >= limit { break }
                 }
             }
         }

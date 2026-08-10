@@ -625,7 +625,16 @@ final class ReaderViewModel {
 
     func nextChapter() {
         guard chapterIndex + 1 < chapters.count else { return }
+        markChapterRead(chapterIndex)
         goToChapter(chapterIndex + 1)
+    }
+
+    private func markChapterRead(_ index: Int) {
+        guard book.format == .online else { return }
+        book.highestReadChapterIndex = max(book.highestReadChapterIndex, index)
+        let nextUnread = book.highestReadChapterIndex + 1
+        book.firstUnreadChapterIndex = nextUnread < chapters.count ? nextUnread : -1
+        book.unreadChapterCount = max(0, chapters.count - nextUnread)
     }
 
     func previousChapter(atEnd: Bool = false) {
@@ -893,6 +902,7 @@ final class ReaderViewModel {
         }
         // 本章读完 → 下一章继续
         if chapterIndex + 1 < chapters.count {
+            markChapterRead(chapterIndex)
             goToChapter(chapterIndex + 1)
             // 等分页完成后自动继续
             ttsContinuationTask?.cancel()

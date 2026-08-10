@@ -29,6 +29,7 @@ struct AISettingsView: View {
     @State private var showTTSKeys = false
     @State private var rewriteTestMessage: String?
     @State private var embeddingTestMessage: String?
+    @State private var embeddingTestSucceeded: Bool?
     @State private var isTestingRewrite = false
     @State private var isTestingEmbedding = false
     @State private var openAITTSTestMessage: String?
@@ -178,10 +179,11 @@ struct AISettingsView: View {
                     Task { await testEmbeddingConnection() }
                 } label: {
                     testButtonLabel(
-                        title: String(localized: "测试向量接口"),
+                        title: String(localized: "检测向量模型"),
                         isTesting: isTestingEmbedding
                     )
                 }
+                .buttonStyle(.bordered)
                 .disabled(
                     isTestingEmbedding
                         || embeddingAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -189,9 +191,19 @@ struct AISettingsView: View {
                 )
 
                 if let embeddingTestMessage {
-                    Text(embeddingTestMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        if let embeddingTestSucceeded {
+                            Image(
+                                systemName: embeddingTestSucceeded
+                                    ? "checkmark.circle.fill"
+                                    : "exclamationmark.triangle.fill"
+                            )
+                            .foregroundStyle(embeddingTestSucceeded ? Color.green : Color.orange)
+                        }
+                        Text(embeddingTestMessage)
+                    }
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
                 }
             }
 
@@ -612,13 +624,58 @@ struct AISettingsView: View {
         save()
         isTestingEmbedding = true
         embeddingTestMessage = nil
+        embeddingTestSucceeded = nil
+        let startedAt = Date()
         defer { isTestingEmbedding = false }
+
         do {
-            _ = try await LLMClient.embed(texts: ["测试向量"], timeout: 30)
-            embeddingTestMessage = String(localized: "向量接口正常")
+            let vectors = try await LLMClient.embed(
+                texts: ["向量模型连通性检测"],
+                timeout: 30
+            )
+            guard vectors.count == 1, let vector = vectors.first else {
+                throw embeddingValidationError(
+                    String(localized: "向量模型应返回 1 个向量，实际返回 \(vectors.count) 个")
+                )
+            }
+            guard !vector.isEmpty else {
+                throw embeddingValidationError(String(localized: "向量模型返回了空向量"))
+            }
+            guard vector.allSatisfy({ $0.isFinite }) else {
+                throw embeddingValidationError(String(localized: "向量中包含无效数值"))
+            }
+
+            let expectedDimensions = automaticEmbeddingDimensions
+                ? 0
+                : Int(embeddingDimensions.rounded())
+            if expectedDimensions > 0, vector.count != expectedDimensions {
+                throw embeddingValidationError(
+                    String(
+                        localized: "向量维度不匹配：设置为 \(expectedDimensions)，模型返回 \(vector.count)"
+                    )
+                )
+            }
+
+            let elapsed = Date().timeIntervalSince(startedAt)
+            embeddingTestSucceeded = true
+            embeddingTestMessage = String(
+                localized: "检测通过：维度 \(vector.count)，耗时 \(String(format: "%.2f", elapsed)) 秒"
+            )
+        } catch is CancellationError {
+            embeddingTestSucceeded = false
+            embeddingTestMessage = String(localized: "检测已取消")
         } catch {
-            embeddingTestMessage = error.localizedDescription
+            embeddingTestSucceeded = false
+            embeddingTestMessage = String(localized: "检测失败：\(error.localizedDescription)")
         }
+    }
+
+    private func embeddingValidationError(_ message: String) -> NSError {
+        NSError(
+            domain: "PureReader.EmbeddingValidation",
+            code: -1,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
     }
 
     @ViewBuilder

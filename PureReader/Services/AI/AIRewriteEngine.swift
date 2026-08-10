@@ -280,14 +280,15 @@ enum AIRewriteEngine {
 
         if validation.needsRepair {
             await progress?(.repairing)
-            if let repaired = try? await repairDraft(
-                context: context,
-                userRequest: userRequest,
-                style: style,
-                plan: plan,
-                candidate: validation.cleanedText,
-                issues: validation.warnings
-            ) {
+            do {
+                let repaired = try await repairDraft(
+                    context: context,
+                    userRequest: userRequest,
+                    style: style,
+                    plan: plan,
+                    candidate: validation.cleanedText,
+                    issues: validation.warnings
+                )
                 let repairedValidation = RewriteValidator.validate(
                     original: context.originalText,
                     rewritten: repaired,
@@ -298,6 +299,10 @@ enum AIRewriteEngine {
                     || repairedValidation.warnings.count <= validation.warnings.count {
                     validation = repairedValidation
                 }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Repair is optional. Keep the usable first draft on timeout or network failure.
             }
         }
 
@@ -401,7 +406,7 @@ enum AIRewriteEngine {
                 .init(role: "user", content: planningInput)
             ],
             temperature: 0.2,
-            timeout: AIRewriteConstants.llmTimeout
+            timeout: AIRewriteConstants.planningTimeout
         )
         return parsePlan(raw, originalLength: context.originalText.count)
             ?? fallbackPlan(
@@ -439,7 +444,7 @@ enum AIRewriteEngine {
                 .init(role: "user", content: user)
             ],
             temperature: max(0.2, AIConfig.temperature - 0.2),
-            timeout: AIRewriteConstants.llmTimeout
+            timeout: AIRewriteConstants.repairTimeout
         )
         return sanitizeOutput(raw)
     }

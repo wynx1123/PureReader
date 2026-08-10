@@ -85,12 +85,21 @@ struct BookshelfView: View {
                         onEdit: { bookToEdit = book },
                         onExport: {
                             do {
-                                let url = try BookImportService.exportTXT(book: book)
+                                let chapters = (book.chapters ?? []).sorted { $0.index < $1.index }
+                                let url = try BookExportService.export(
+                                    book: book,
+                                    chapters: chapters,
+                                    format: .txt,
+                                    options: .default
+                                )
                                 exportURL = url
                                 showExportSheet = true
                             } catch {
                                 viewModel.importErrorMessage = error.localizedDescription
                             }
+                        },
+                        onDownload: {
+                            viewModel.downloadWholeBook(for: book, context: modelContext)
                         },
                         onDelete: { bookPendingDelete = book }
                     )
@@ -199,7 +208,20 @@ struct BookshelfView: View {
                         HStack(spacing: 10) {
                             ProgressView(value: Double(viewModel.downloadCompleted), total: Double(max(1, viewModel.downloadTotal)))
                             Text("\(viewModel.downloadCompleted)/\(viewModel.downloadTotal)").font(.caption.monospacedDigit())
-                            Button(String(localized: "取消")) { viewModel.cancelDownload() }
+                            if viewModel.downloadStatus == .paused {
+                                Button(String(localized: "继续")) {
+                                    // 继续需要书源和章节，先取消再重新入队
+                                }
+                            } else if viewModel.downloadStatus == .completedWithFailures {
+                                Button(String(localized: "重试")) {
+                                    // 重试失败章节
+                                }
+                            } else {
+                                Button(String(localized: "暂停")) {
+                                    viewModel.pauseDownload(for: bookID, context: modelContext)
+                                }
+                            }
+                            Button(String(localized: "取消")) { viewModel.cancelDownload(for: bookID, context: modelContext) }
                         }
                         .padding(12).background(.regularMaterial, in: Capsule())
                         .padding(.horizontal, 12)

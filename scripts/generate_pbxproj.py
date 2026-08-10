@@ -29,8 +29,20 @@ def uid(key: str) -> str:
 
 
 def main(output: Path = OUT) -> None:
-    swift_files = sorted(SRC.rglob("*.swift"))
-    test_files = sorted(TESTS.rglob("*.swift")) if TESTS.is_dir() else []
+    # Path ordering is case-insensitive on Windows and case-sensitive on macOS.
+    # Sort by POSIX relative path strings so --check is deterministic everywhere.
+    swift_files = sorted(
+        SRC.rglob("*.swift"),
+        key=lambda path: path.relative_to(SRC).as_posix(),
+    )
+    test_files = (
+        sorted(
+            TESTS.rglob("*.swift"),
+            key=lambda path: path.relative_to(TESTS).as_posix(),
+        )
+        if TESTS.is_dir()
+        else []
+    )
     assert swift_files, "no swift files"
     assets = SRC / "Resources" / "Assets.xcassets"
     assert assets.is_dir()
@@ -475,7 +487,7 @@ if __name__ == "__main__":
         with tempfile.TemporaryDirectory() as tmp:
             candidate = Path(tmp) / "project.pbxproj"
             main(candidate)
-            if not OUT.exists() or candidate.read_bytes() != OUT.read_bytes():
+            if not OUT.exists() or candidate.read_text(encoding="utf-8") != OUT.read_text(encoding="utf-8"):
                 print("project.pbxproj is stale; run scripts/generate_pbxproj.py", file=sys.stderr)
                 raise SystemExit(1)
         print("project.pbxproj is up to date")
